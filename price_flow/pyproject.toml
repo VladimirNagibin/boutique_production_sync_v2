@@ -10,10 +10,9 @@ dependencies = [
     "pydantic-settings>=2.6.1",
     "aiosqlite>=0.22.1",
     "python-multipart>=0.0.21",
-    "fastapi>=0.128.0",
+    "fastapi>=0.135.1",
     "uvicorn>=0.40.0",
-    "requests>=2.32.5",
-    "orjson>=3.11.5",
+    "requests>=2.33.1",
     "aiofiles>=25.1.0",
     "pandas>=3.0.0",
     "bs4>=0.0.2",
@@ -22,12 +21,12 @@ dependencies = [
     "openpyxl>=3.1.5",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "bandit>=1.9.2",
-    "mypy>=1.19.1",
+    "mypy>=1.20.2",
     "mypy-extensions>=1.1.0",
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.0.0",
     "ruff>=0.14.11",
@@ -35,6 +34,10 @@ dev = [
     "safety>=3.7.0",
     "types-aiofiles>=25.1.0.20251011",
     "types-requests>=2.32.4.20260107",
+    "black>=26.3.1",
+    "pandas-stubs>=2.3.3.260113",
+    "pre-commit>=4.5.1",
+    "taskipy>=1.14.1",
 ]
 
 [build-system]
@@ -43,9 +46,11 @@ build-backend = "setuptools.build_meta"
 
 # Конфигурация Ruff
 [tool.ruff]
+line-length = 78  # явно задано
 target-version = "py313"
 fix = true  # Исправлять ошибки автоматически
-output-format = "full"  # Уровень детализации вывода
+output-format = "grouped"  # Уровень детализации вывода
+src = ["src"]
 
 [tool.ruff.lint]
 # Включаемые правила
@@ -94,8 +99,6 @@ exclude = [
 ]
 
 ignore = [
-    # "ANN101",  # Missing type annotation for `self` in method
-    # "ANN102",  # Missing type annotation for `cls` in classmethod
     "D101",    # Missing docstring in public class
     "D102",    # Missing docstring in public method
     "D103",    # Missing docstring in public function
@@ -110,11 +113,14 @@ ignore = [
     "RUF003",  # B
 ]
 
-# max-complexity = 10  # Максимальная сложность когнитивной нагрузки
-# line-length = 78  # Максимальная длина строки
+[tool.ruff.lint.mccabe]
+max-complexity = 20  # Максимальная сложность когнитивной нагрузки
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # разрешить assert в тестах
 
 [tool.ruff.lint.isort]
-known-first-party = ["src", "api", "core", "db", "interfaces", "repositories", "schemas", "services"]
+known-first-party = ["src"]  # , "api", "core", "db", "interfaces", "repositories", "schemas", "services"]
 lines-after-imports = 2
 lines-between-types = 1
 
@@ -127,14 +133,20 @@ strict = true
 [tool.ruff.lint.flake8-unused-arguments]
 ignore-variadic-names = true
 
+[tool.ruff.lint.pydocstyle]
+convention = "google"        # если когда-нибудь включите docstring-проверки
+
 [tool.ruff.format]
 indent-style = "space"
 quote-style = "double"
 skip-magic-trailing-comma = false
+line-ending = "lf"                       # "lf", "crlf", "native"
+docstring-code-format = true             # форматировать код внутри docstring
+docstring-code-line-length = 88          # максимальная длина строк в коде внутри docstring
 
 # Конфигурация mypy (Pydantic плагин включен автоматически)
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -147,6 +159,8 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
+
+exclude = ["tests/", "src/__pycache__"]
 
 # Игнорировать отсутствующие импорты для некоторых модулей
 ignore_missing_imports = true
@@ -165,20 +179,20 @@ plugins = [
 # plugins = ["pydantic.mypy"]
 
 # Включаем строгий режим постепенно
-[[tool.mypy.overrides]]
-module = [
-    "telegram.*",
-    "telegram.ext.*",
-    "aiogram.*",
-]
+# [[tool.mypy.overrides]]
+# module = [
+#     "telegram.*",
+#     "telegram.ext.*",
+#     "aiogram.*",
+# ]
 
-[[tool.mypy.overrides]]
-module = [
-    "src.*",
-    "core.*",
-]
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
+# [[tool.mypy.overrides]]
+# module = [
+#     "src.*",
+#     "core.*",
+# ]
+# disallow_untyped_defs = true
+# disallow_incomplete_defs = true
 
 # Конфигурация pytest
 [tool.pytest.ini_options]
@@ -242,15 +256,12 @@ run = "uv run src/main.py"
 
 # Установка зависимостей
 install = "uv sync"
-install-dev = "uv sync --all-extras"
+install-dev = "uv sync --group dev"  # или --all-groups, если будет несколько групп
 
 # Очистка
 clean = "rm -rf .mypy_cache .pytest_cache .ruff_cache __pycache__ *.pyc"
 
-[dependency-groups]
-dev = [
-    "pandas-stubs>=2.3.3.260113",
-    "pre-commit>=4.5.1",
-    # "pydantic[all]>=2.12.5",
-    "types-aiofiles>=25.1.0.20251011",
-]
+format-check = "ruff format --check ."
+pre-commit = "pre-commit run --all-files"
+ci = "ruff check . && mypy . && pytest --cov=src --cov-report=term"
+ruff-fix = "ruff check . --fix && mypy . --fix"
