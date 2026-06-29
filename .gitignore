@@ -223,3 +223,4 @@ logs/
 .python-version
 data/
 uploads/
+config/
