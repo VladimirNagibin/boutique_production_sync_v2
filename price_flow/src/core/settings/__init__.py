@@ -1,5 +1,7 @@
 import logging
 
+from typing import Final
+
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -202,22 +204,37 @@ class Settings(BaseSettings):
 
 
 # ===== Создание глобального экземпляра =====
-try:
-    settings = Settings()
-    _logger.debug("Settings loaded successfully")
-except Exception as e:
-    # Логируем и перебрасываем как SettingsLoadError для единообразия
-    _logger.critical("Failed to load settings: %s", e, exc_info=True)
-    raise SettingsLoadError(
-        message=f"Could not initialize settings: {e}"
-    ) from e
+def _load_settings() -> Settings:
+    """
+    Загружает настройки приложения.
+
+    Returns:
+        Settings: Экземпляр настроек
+
+    Raises:
+        SettingsLoadError: Если не удалось загрузить настройки
+    """
+    try:
+        instance = Settings()
+        _logger.debug("Settings loaded successfully")
+    except Exception as e:
+        _logger.critical("Failed to load settings: %s", e, exc_info=True)
+        raise SettingsLoadError(
+            message=f"Could not initialize settings: {e}"
+        ) from e
+    else:
+        return instance
+
+
+# Глобальный экземпляр настроек с явной аннотацией типа
+settings: Final[Settings] = _load_settings()
 
 
 # ===== Экспортируемые объекты =====
 __all__ = [
     "AppSettings",
     "AuthSettings",
-    "Bitrix24Settings",
+    # "Bitrix24Settings",
     "DatabaseSettings",
     "LogLevel",
     "ProductionSettingsError",

@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
@@ -15,30 +17,46 @@ closing_codes_router = APIRouter()  # dependencies=[Depends(verify_api_key)])
 async def export_clothing_codes(
     supplier_id: int | None = Query(None, description="Фильтр по поставщику"),
     packing_format: str = Query("zip", pattern="^(zip|gzip|csv|json)$"),
-    clothing_codes_service: ClothingCodesService = Depends(get_clothing_codes_service)
+    # clothing_codes_service: ClothingCodesService = Depends(
+    #     get_clothing_codes_service
+    # ),
+    clothing_codes_service: Annotated[
+        ClothingCodesService, Depends(get_clothing_codes_service)
+    ] = ...,
 ) -> StreamingResponse:
     """
     Экспортировать данные в файл (ZIP/GZIP/CSV/JSON)
     """
-    return await clothing_codes_service.export_clothing_codes(
+    return await clothing_codes_service.export_clothing_codes(  # type: ignore[no-any-return]
         supplier_id, packing_format
     )
 
 
 @closing_codes_router.post("/import", response_model=ImportResult)
 async def import_clothing_codes(
-    file: UploadFile = File(..., description="ZIP/GZIP/CSV/JSON файл с данными"),
+    file: Annotated[
+        UploadFile,
+        File(..., description="ZIP/GZIP/CSV/JSON файл с данными"),
+    ],
+    # file: UploadFile = File(
+    #     ..., description="ZIP/GZIP/CSV/JSON файл с данными"
+    # ),
+    clothing_codes_service: Annotated[
+        ClothingCodesService,
+        Depends(get_clothing_codes_service),
+    ],
+    # clothing_codes_service: ClothingCodesService = Depends(
+    #     get_clothing_codes_service
+    # ),
     strategy: str = Query(
         "upsert",
         pattern="^(upsert|skip|replace_supplier|replace_all|validate_only)$",
-        description="Стратегия импорта"
+        description="Стратегия импорта",
     ),
     supplier_id_filter: int | None = Query(
-        None,
-        description="Ограничить импорт конкретным поставщиком"
+        None, description="Ограничить импорт конкретным поставщиком"
     ),
-    clothing_codes_service: ClothingCodesService = Depends(get_clothing_codes_service),
-):
+) -> ImportResult:
     """
     Импортировать данные из файла
 
@@ -113,7 +131,10 @@ async def import_clothing_codes(
 #     if existing:
 #         raise HTTPException(
 #             status_code=409,
-#             detail=f"Запись с кодом {data.code} для поставщика {data.supplier_id} уже существует"
+#             detail=(
+#                 f"Запись с кодом {data.code} для поставщика "
+#                 f"{data.supplier_id} уже существует"
+#             )
 #         )
 
 #     new_id = await repo.create(data)
@@ -138,7 +159,10 @@ async def import_clothing_codes(
 #     # Если обновляем code или supplier_id, проверяем уникальность
 #     if data.code is not None or data.supplier_id is not None:
 #         new_code = data.code if data.code is not None else existing['code']
-#         new_supplier = data.supplier_id if data.supplier_id is not None else existing['supplier_id']
+#         new_supplier = (
+#             data.supplier_id if data.supplier_id is not None
+#             else existing['supplier_id']
+#         )
 
 #         duplicate = await repo.get_by_supplier_code(new_supplier, new_code)
 #         if duplicate and duplicate['id'] != item_id:

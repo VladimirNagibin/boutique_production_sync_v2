@@ -2,7 +2,7 @@ import zipfile
 
 from pathlib import Path
 
-from core.exceptions import FileAppNotFoundError, ZipExtractionError
+from core.exceptions.file import FileAppNotFoundError, ZipExtractionError
 from core.logger import logger
 
 
@@ -59,7 +59,9 @@ def _validate_file_exists(path: Path) -> None:
         raise FileAppNotFoundError(path, f"Путь не является файлом: {path}")
 
 
-def _get_extraction_directory(zip_path: Path, extract_to: str | Path | None) -> Path:
+def _get_extraction_directory(
+    zip_path: Path, extract_to: str | Path | None
+) -> Path:
     """Определяет директорию для распаковки."""
     if extract_to:
         return Path(extract_to)
@@ -67,7 +69,9 @@ def _get_extraction_directory(zip_path: Path, extract_to: str | Path | None) -> 
     return zip_path.parent / zip_path.stem
 
 
-def _perform_extraction(zip_path: Path, extract_to: Path, password: str | None) -> bool:
+def _perform_extraction(
+    zip_path: Path, extract_to: Path, password: str | None
+) -> bool:
     """Выполняет распаковку ZIP архива."""
     try:
         # Открываем ZIP файл
@@ -81,7 +85,9 @@ def _perform_extraction(zip_path: Path, extract_to: Path, password: str | None) 
                 _handle_runtime_error(zip_path, e)
                 return False
             except zipfile.BadZipFile as e:
-                _handle_zip_extraction_error(zip_path, f"Ошибка при чтении архива: {e}")
+                _handle_zip_extraction_error(
+                    zip_path, f"Ошибка при чтении архива: {e}"
+                )
                 return False
             # Логируем успешную распаковку
             _log_extraction_success(extract_to, zip_ref)
@@ -89,7 +95,8 @@ def _perform_extraction(zip_path: Path, extract_to: Path, password: str | None) 
 
     except zipfile.BadZipFile as e:
         _handle_zip_extraction_error(
-            zip_path, f"Файл поврежден или не является ZIP архивом: {zip_path}: {e}"
+            zip_path,
+            f"Файл поврежден или не является ZIP архивом: {zip_path}: {e}",
         )
         return False
 
@@ -106,7 +113,9 @@ def _handle_runtime_error(zip_path: Path, error: RuntimeError) -> None:
     _handle_zip_extraction_error(zip_path, f"Ошибка распаковки: {error}")
 
 
-def _log_extraction_success(extract_to: Path, zip_ref: zipfile.ZipFile) -> None:
+def _log_extraction_success(
+    extract_to: Path, zip_ref: zipfile.ZipFile
+) -> None:
     """Логирует информацию об успешной распаковке."""
     file_list = zip_ref.namelist()
     file_count = len(file_list)

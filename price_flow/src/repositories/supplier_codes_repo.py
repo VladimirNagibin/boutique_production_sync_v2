@@ -11,11 +11,8 @@ import pandas as pd
 
 from pandas import DataFrame
 
-from core.exceptions import (
-    CSVParsingError,
-    DatabaseLoadError,
-    FileAppNotFoundError,
-)
+from core.exceptions.app_exceptions import DatabaseLoadError
+from core.exceptions.file import CsvParsingError, FileAppNotFoundError
 from core.logger import logger
 from core.settings import settings
 from db.factory import AsyncDatabaseFactory
@@ -23,7 +20,9 @@ from interfaces.db.base import IDatabaseManager
 
 
 class SupplierCodesRepo:
-    def __init__(self, db_path: str = str(settings.DB_SQLITE_PATH)) -> None:  # type: ignore
+    def __init__(
+        self, db_path: str = str(settings.sqlite.sqlite_file)
+    ) -> None:
         self.db_path = db_path
         self._db_manager: IDatabaseManager | None = None
 
@@ -34,7 +33,9 @@ class SupplierCodesRepo:
         return self._db_manager
 
     async def load_data(
-        self, file_path: str | Path, table_name: str = "supplier_product_codes"
+        self,
+        file_path: str | Path,
+        table_name: str = "supplier_product_codes",
     ) -> dict[str, Any]:
         """
         Загружает данные из CSV файла в таблицу базы данных.
@@ -95,7 +96,7 @@ class SupplierCodesRepo:
                 },
             )
 
-        except (ValueError, CSVParsingError, FileAppNotFoundError) as e:
+        except (ValueError, CsvParsingError, FileAppNotFoundError) as e:
             # Ошибки валидации данных и парсинга
             logger.warning(f"Ошибка обработки данных: {e}")
             raise
@@ -121,7 +122,9 @@ class SupplierCodesRepo:
             error_message = f"Недопустимое имя таблицы: {name}"
             raise ValueError(error_message)
 
-    def _sync_load_operation(self, csv_path: Path, table_name: str) -> dict[str, Any]:
+    def _sync_load_operation(
+        self, csv_path: Path, table_name: str
+    ) -> dict[str, Any]:
         """
         Синхронная операция загрузки данных.
 
@@ -274,7 +277,8 @@ class SupplierCodesRepo:
                     "columns": len(df.columns),
                     "column_names": list(df.columns),
                     "encoding": encoding,
-                    "memory_usage_mb": df.memory_usage(deep=True).sum() / (1024 * 1024),
+                    "memory_usage_mb": df.memory_usage(deep=True).sum()
+                    / (1024 * 1024),
                 },
             )
 
@@ -293,7 +297,9 @@ class SupplierCodesRepo:
                 "category",
                 "subcategory",
             ]
-            missing_columns = [col for col in required_columns if col not in df.columns]
+            missing_columns = [
+                col for col in required_columns if col not in df.columns
+            ]
 
             if missing_columns:
                 logger.warning(
@@ -306,33 +312,38 @@ class SupplierCodesRepo:
 
         except UnicodeDecodeError as e:
             logger.error(f"Ошибка кодировки: {e}", exc_info=True)
-            raise CSVParsingError(
-                csv_path, f"Не удалось прочитать файл из-за кодировки: {csv_path}"
+            raise CsvParsingError(
+                csv_path,
+                f"Не удалось прочитать файл из-за кодировки: {csv_path}",
             ) from e
 
         except pd.errors.EmptyDataError as e:
             logger.warning(f"CSV файл пуст или поврежден: {csv_path}")
-            raise CSVParsingError(
+            raise CsvParsingError(
                 csv_path, "Файл пуст или содержит только заголовки."
             ) from e
 
         except pd.errors.ParserError as e:
             logger.error(f"Ошибка парсинга CSV: {e}", exc_info=True)
-            raise CSVParsingError(
+            raise CsvParsingError(
                 csv_path, f"Формат файла не соответствует CSV: {e}"
             ) from e
 
         except Exception as e:
             # Ловим остальные возможные ошибки pandas
-            logger.error(f"Неожиданная ошибка при чтении CSV: {e}", exc_info=True)
-            raise CSVParsingError(csv_path, f"Ошибка при чтении файла: {e}") from e
+            logger.error(
+                f"Неожиданная ошибка при чтении CSV: {e}", exc_info=True
+            )
+            raise CsvParsingError(
+                csv_path, f"Ошибка при чтении файла: {e}"
+            ) from e
         else:
             return df
 
     def _validate_data_frame(self, df: DataFrame, csv_path: Path) -> None:
         if len(df) == 0:
             logger.warning(f"CSV файл пуст: {csv_path}")
-            raise CSVParsingError(csv_path, "Файл не содержит данных")
+            raise CsvParsingError(csv_path, "Файл не содержит данных")
 
     def _detect_file_encoding(self, file_path: Path) -> str:
         """
@@ -357,7 +368,8 @@ class SupplierCodesRepo:
                 return encoding
         # По умолчанию возвращаем utf-8
         logger.warning(
-            f"Не удалось определить кодировку для {file_path}, используется utf-8"
+            f"Не удалось определить кодировку для {file_path}, "
+            "используется utf-8"
         )
         return "utf-8"
 
@@ -386,7 +398,9 @@ class SupplierCodesRepo:
 
         # Оптимизация типов данных
         df = self._optimize_dataframe_types(df)
-        logger.debug(f"Начало записи в таблицу {table_name} ({len(df)} строк)")
+        logger.debug(
+            f"Начало записи в таблицу {table_name} ({len(df)} строк)"
+        )
         try:
             # Загружаем данные в базу
             rows_loaded: int | None = df.to_sql(
@@ -426,22 +440,28 @@ class SupplierCodesRepo:
         # Создаем копию, чтобы не модифицировать оригинал
         result_df = df.copy()
         column_types = {
-            'supplier_id': 'Int64',  # Int64 поддерживает NaN
-            'code': 'Int64',
-            'id': 'Int64',
+            "supplier_id": "Int64",  # Int64 поддерживает NaN
+            "code": "Int64",
+            "id": "Int64",
         }
         # Применяем типы для существующих колонок
         for column, dtype in column_types.items():
             if column in result_df.columns:
                 try:
                     # Сначала конвертируем в numeric, затем в Int64
-                    result_df[column] = pd.to_numeric(result_df[column], errors='coerce')
+                    result_df[column] = pd.to_numeric(
+                        result_df[column], errors="coerce"
+                    )
                     result_df[column] = result_df[column].astype(dtype)
-                except Exception as e:
-                    logger.debug(f"Ошибка при конвертации колонки '{column}': {e}")
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(
+                        f"Ошибка при конвертации колонки '{column}': {e}"
+                    )
         return result_df
 
-    def _create_indexes(self, conn: sqlite3.Connection, table_name: str) -> None:
+    def _create_indexes(
+        self, conn: sqlite3.Connection, table_name: str
+    ) -> None:
         """
         Создает индексы для таблицы.
 
@@ -474,7 +494,7 @@ class SupplierCodesRepo:
         Returns:
             DataFrame с колонками: code, category, subcategory
         """
-        conn = sqlite3.connect(settings.DB_SQLITE_PATH)  # type: ignore
+        conn = sqlite3.connect(settings.DB_SQLITE_PATH)
         query = """
         SELECT code, category, subcategory
         FROM supplier_product_codes

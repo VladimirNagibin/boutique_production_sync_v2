@@ -3,33 +3,35 @@ import shutil
 import uuid
 
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
-import aiofiles.os as aios  # type: ignore[import-untyped]
+import aiofiles.os as aios
 
 from fastapi import Depends, UploadFile
 
-from core.exceptions import (
-    DatabaseAppError,
-    DataProcessingError,
-    ErrorMessages,
+from core.exceptions.app_exceptions import DataProcessingError
+from core.exceptions.database import DatabaseError
+from core.exceptions.enums import ErrorMessages
+from core.exceptions.file import (
     FileAppNotFoundError,
     FileNotZipError,
-    FileSizeError,
+    FileTooLargeError,
     FileUploadError,
     ZipExtractionError,
 )
 from core.logger import logger
 from db.factory import AsyncDatabaseFactory
 from interfaces.db.base import IDatabaseManager
-from repositories.supplier_codes_repo import SupplierCodesRepo, get_supplier_codes_repo
+from repositories.supplier_codes_repo import (
+    SupplierCodesRepo,
+    get_supplier_codes_repo,
+)
 from schemas.response_schemas import SuccessResponse
 from services.file_uploader import FileUploader, get_file_uploader
 from services.helpers import extract_zip
 
 
 class LoaderCodes:
-
     def __init__(
         self,
         supplier_codes_repo: SupplierCodesRepo,
@@ -54,7 +56,9 @@ class LoaderCodes:
             async with self._db_manager_lock:
                 if self._db_manager is None:  # Double-check locking
                     try:
-                        self._db_manager = await AsyncDatabaseFactory.get_manager()
+                        self._db_manager = (
+                            await AsyncDatabaseFactory.get_manager()
+                        )
                         logger.debug("Менеджер БД успешно инициализирован")
                     except Exception as e:
                         logger.error(
@@ -62,10 +66,10 @@ class LoaderCodes:
                             extra={"error": str(e)},
                             exc_info=True,
                         )
-                        raise DatabaseAppError(
+                        raise DatabaseError(
                             message=(
-                                "Не удалось инициализировать менеджер базы данных: "
-                                f"{e!s}"
+                                "Не удалось инициализировать менеджер базы"
+                                f"данных: {e!s}"
                             )
                         ) from e
         return self._db_manager
@@ -84,7 +88,9 @@ class LoaderCodes:
 
             except ConnectionError as e:
                 # Ошибки соединения с БД
-                logger.error(f"Ошибка соединения при закрытии менеджера БД: {e}")
+                logger.error(
+                    f"Ошибка соединения при закрытии менеджера БД: {e}"
+                )
 
             except TimeoutError as e:
                 # Таймаут при закрытии соединения
@@ -92,19 +98,27 @@ class LoaderCodes:
 
             except RuntimeError as e:
                 # Ошибки выполнения (например, уже закрыто)
-                if "closed" in str(e).lower() or "not connected" in str(e).lower():
+                if (
+                    "closed" in str(e).lower()
+                    or "not connected" in str(e).lower()
+                ):
                     logger.debug(f"Менеджер БД уже закрыт: {e}")
                 else:
-                    logger.error(f"Ошибка выполнения при закрытии менеджера БД: {e}")
+                    logger.error(
+                        f"Ошибка выполнения при закрытии менеджера БД: {e}"
+                    )
 
             except AttributeError as e:
                 # Если у менеджера нет метода close()
-                logger.error(f"Менеджер БД не поддерживает метод close(): {e}")
+                logger.error(
+                    f"Менеджер БД не поддерживает метод close(): {e}"
+                )
 
             except Exception as e:  # noqa: BLE001
                 # Обработка любых других неожиданных ошибок с логированием
                 logger.error(
-                    f"Неожиданная ошибка при очистке ресурсов: {e}", exc_info=True
+                    f"Неожиданная ошибка при очистке ресурсов: {e}",
+                    exc_info=True,
                 )
 
             finally:
@@ -124,11 +138,13 @@ class LoaderCodes:
             # 1. Загрузка ZIP файла
             upload_response = await self.file_uploader.upload_file(file)
             self._validate_upload_response(upload_response)
-            zip_file_path = Path(upload_response.details["file_path"])  # type: ignore
+            zip_file_path = Path(upload_response.details["file_path"])
 
             # 2. Подготовка директории для распаковки
             # Создаем временную папку с UUID, чтобы избежать конфликтов
-            extract_subdir = f"{zip_file_path.stem}_extracted_{uuid.uuid4().hex[:8]}"
+            extract_subdir = (
+                f"{zip_file_path.stem}_extracted_{uuid.uuid4().hex[:8]}"
+            )
             extract_dir = zip_file_path.parent / extract_subdir
             extract_dir.mkdir(exist_ok=True)
 
@@ -153,7 +169,7 @@ class LoaderCodes:
 
         except (
             FileNotZipError,
-            FileSizeError,
+            FileTooLargeError,
             ZipExtractionError,
             FileUploadError,
             FileAppNotFoundError,
@@ -177,22 +193,26 @@ class LoaderCodes:
             if extract_dir and extract_dir.exists():
                 await remove_directory_async(extract_dir)
 
-    def _validate_upload_response(self, upload_response: SuccessResponse) -> None:
+    def _validate_upload_response(
+        self, upload_response: SuccessResponse
+    ) -> None:
         if not upload_response.details:
             error_message = "File not uploaded"
             raise FileUploadError(error_message)
 
     def _validate_file_found(self, files: list[Path]) -> None:
         if not files:
-            raise DataProcessingError(ErrorMessages.ERR_MSG_CSV_NOT_FOUND)
+            raise DataProcessingError(ErrorMessages.CSV_NOT_FOUND.message)
 
-    async def _unzip_file_async(self, zip_path: Path, extract_to: Path) -> None:
+    async def _unzip_file_async(
+        self, zip_path: Path, extract_to: Path
+    ) -> None:
         """
         Запускает распаковку в отдельном потоке.
         """
 
-        def _unzip_task() -> bool:
-            return extract_zip(str(zip_path), str(extract_to))
+        def _unzip_task() -> None:
+            extract_zip(str(zip_path), str(extract_to))
 
         try:
             await asyncio.to_thread(_unzip_task)
@@ -204,15 +224,19 @@ class LoaderCodes:
 
         except Exception as e:
             logger.error(
-                f"Ошибка распаковки архива {zip_path.name}: {e}", exc_info=True
+                f"Ошибка распаковки архива {zip_path.name}: {e}",
+                exc_info=True,
             )
             error_message = f"Ошибка при распаковке архива: {zip_path.name}"
             raise ZipExtractionError(zip_path, error_message) from e
 
-    async def load_file_to_db(self, unpacked_file_path: str) -> dict[str, Any]:
-        return await self.supplier_codes_repo.load_data(
+    async def load_file_to_db(
+        self, unpacked_file_path: str
+    ) -> dict[str, Any]:
+        result = await self.supplier_codes_repo.load_data(
             unpacked_file_path, "supplier_product_codes"
         )
+        return cast(dict[str, Any], result)
 
 
 async def remove_file_async(file_path: str | Path) -> bool:
@@ -258,7 +282,9 @@ async def remove_directory_async(dir_path: str | Path) -> bool:
 
 
 def get_loader_codes(
-    supplier_codes_repo: Annotated[SupplierCodesRepo, Depends(get_supplier_codes_repo)],
+    supplier_codes_repo: Annotated[
+        SupplierCodesRepo, Depends(get_supplier_codes_repo)
+    ],
     file_uploader: Annotated[FileUploader, Depends(get_file_uploader)],
 ) -> LoaderCodes:
     return LoaderCodes(supplier_codes_repo, file_uploader)

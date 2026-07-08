@@ -21,18 +21,21 @@ from googleapiclient.errors import HttpError
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from core.exceptions import (
-    BaseAppException,
+from core.exceptions.app_exceptions import (
     DriveApiError,
     EmailFetchError,
     ExcelProcessingError,
-    FileAppNotFoundError,
     PriceProcessingError,
     SupplierDataError,
 )
+from core.exceptions.base import BaseAppException
+from core.exceptions.file import FileAppNotFoundError
 from core.logger import logger
 from core.settings import settings
-from repositories.supplier_codes_repo import SupplierCodesRepo, get_supplier_codes_repo
+from repositories.supplier_codes_repo import (
+    SupplierCodesRepo,
+    get_supplier_codes_repo,
+)
 from schemas.converter_schemas import UploadResult
 from services.converter import FileUploader, get_file_uploader
 
@@ -51,7 +54,9 @@ class PriceLoader:
     TARGET_FILENAME: ClassVar[str] = "Нал основной прайс на элитку BY"
 
     # Правила для автоматического заполнения
-    PRODUCT_NAME_RULES: ClassVar[list[tuple[Callable[[str], bool], str, str]]] = [
+    PRODUCT_NAME_RULES: ClassVar[
+        list[tuple[Callable[[str], bool], str, str]]
+    ] = [
         # (условие, группа, подгруппа)
         (
             lambda name: any(
@@ -75,7 +80,8 @@ class PriceLoader:
             "NO",
         ),
         (
-            lambda name: "montale" in name.lower() and "декодированный" in name.lower(),
+            lambda name: "montale" in name.lower()
+            and "декодированный" in name.lower(),
             "NO",
             "NO",
         ),
@@ -104,7 +110,9 @@ class PriceLoader:
         self.target_filename = target_filename
         self._drive_service = None
 
-        logger.info(f"Инициализирован PriceLoader для supplier_id={supplier_id}")
+        logger.info(
+            f"Инициализирован PriceLoader для supplier_id={supplier_id}"
+        )
 
     async def process_price(
         self,
@@ -115,7 +123,8 @@ class PriceLoader:
         # ),
     ) -> UploadResult:
         """
-        Основной метод: получение ссылки -> поиск файла -> скачивание -> обработка.
+        Основной метод:
+        получение ссылки -> поиск файла -> скачивание -> обработка.
 
         Returns:
             Path: Путь к обработанному файлу
@@ -127,11 +136,18 @@ class PriceLoader:
             logger.info("Поиск ссылки в почте...")
             drive_link = await self._get_latest_drive_link()
             self._validate_drive_link(drive_link)
-            logger.info(f"Найдена ссылка на Google Drive: {drive_link[:50]}...")  # type: ignore[index]
+            logger.info(
+                f"Найдена ссылка на Google Drive: {drive_link[:50]}..."  # type: ignore[index]
+            )
 
             # 2. Поиск файла в Google Drive
-            logger.info(f"Поиск файла '{self.target_filename}' в Google Drive...")
-            file_id = await self._find_file_in_drive(drive_link, self.target_filename)  # type: ignore[arg-type]
+            logger.info(
+                f"Поиск файла '{self.target_filename}' в Google Drive..."
+            )
+            file_id = await self._find_file_in_drive(
+                drive_link,  # type: ignore[arg-type]
+                self.target_filename,
+            )
             self._validate_file_id(file_id, self.target_filename, drive_link)  # type: ignore[arg-type]
             logger.info(f"Найден файл с ID: {file_id}")
 
@@ -140,14 +156,18 @@ class PriceLoader:
                 timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
                 output_filename = f"price_{self.supplier_id}_{timestamp}.xlsx"
 
-            output_path = settings.BASE_DIR / Path(f"uploads/{output_filename}")
+            output_path = settings.BASE_DIR / Path(
+                f"uploads/{output_filename}"
+            )
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
             logger.info(f"Скачивание файла в: {output_path}")
             await self._download_file(file_id, output_path)  # type: ignore[arg-type]
 
             # 4. Получение данных поставщика
-            logger.info(f"Загрузка данных поставщика ID={self.supplier_id}...")
+            logger.info(
+                f"Загрузка данных поставщика ID={self.supplier_id}..."
+            )
             supplier_data = await self._get_supplier_data_async()
 
             # 5. Обработка Excel файла
@@ -179,7 +199,9 @@ class PriceLoader:
         else:
             return upload_result
         finally:
-            # await self._cleanup_temp_files([output_path, enriched_file_path])
+            # await self._cleanup_temp_files(
+            #     [output_path, enriched_file_path]
+            # )
             await self._cleanup_temp_files([enriched_file_path])
 
     async def _get_latest_drive_link(self) -> str | None:
@@ -232,7 +254,8 @@ class PriceLoader:
             scan_limit = min(self.EMAIL_SCAN_LIMIT, total_messages)
 
             logger.info(
-                f"Всего писем: {total_messages}. " f"Сканируем последние {scan_limit}."
+                f"Всего писем: {total_messages}. "
+                f"Сканируем последние {scan_limit}."
             )
 
             # Ищем с конца (последние письма)
@@ -255,7 +278,8 @@ class PriceLoader:
                         # Проверяем отправителя
                         if self.settings.SENDER_PRICE_LANSETI in sender:
                             logger.debug(
-                                f"Найдено письмо от искомого отправителя: {sender}"
+                                "Найдено письмо от искомого отправителя: "
+                                f"{sender}"
                             )
 
                             # Извлекаем ссылку
@@ -270,7 +294,9 @@ class PriceLoader:
                                 return link
             mail.close()
             mail.logout()
-            logger.warning(f"Ссылка не найдена в последних {scan_limit} письмах")
+            logger.warning(
+                f"Ссылка не найдена в последних {scan_limit} письмах"
+            )
 
         except Exception as e:
             logger.error(f"Ошибка при работе с почтой: {e}")
@@ -315,14 +341,16 @@ class PriceLoader:
 
             if drive_links:
                 logger.debug(
-                    f"Найдено {len(drive_links)} прямых ссылок на Google Drive"
+                    f"Найдено {len(drive_links)} прямых ссылок на "
+                    "Google Drive"
                 )
                 return drive_links[0]  # type: ignore
 
         except (AttributeError, KeyError, TypeError, ValueError) as e:
             # Ошибки парсинга HTML или доступа к атрибутам
             logger.warning(
-                f"Ошибка парсинга HTML при извлечении ссылки: {type(e).__name__}: {e}"
+                "Ошибка парсинга HTML при извлечении ссылки: "
+                f"{type(e).__name__}: {e}"
             )
             return None
         # except Exception as e:
@@ -331,7 +359,8 @@ class PriceLoader:
         #         f"Неожиданная ошибка при извлечении ссылки из письма: "
         #         f"{type(e).__name__}: {e}"
         #     )
-        #     # Можно рейзить дальше или вернуть None в зависимости от требований
+        #     # Можно рейзить дальше или вернуть None в зависимости от
+        #     # требований
         #     return None
         return None
 
@@ -352,24 +381,31 @@ class PriceLoader:
                     try:
                         body_payload = part.get_payload(decode=True)
                         if body_payload and isinstance(body_payload, bytes):
-                            return body_payload.decode("utf-8", errors="ignore")
+                            return body_payload.decode(
+                                "utf-8", errors="ignore"
+                            )
                         elif body_payload and isinstance(body_payload, str):
                             # Если уже строка, просто возвращаем
                             return body_payload
                     except UnicodeDecodeError:
-                        # Логируем ошибку декодирования и идем к следующей части
-                        logger.debug("Не удалось декодировать HTML часть как UTF-8")
+                        # Логируем ошибку декодирования и идем к следующей
+                        # части
+                        logger.debug(
+                            "Не удалось декодировать HTML часть как UTF-8"
+                        )
                         continue
                     except (AttributeError, TypeError, ValueError) as e:
-                        # Если payload пустой или имеет неожиданный тип (например, None)
+                        # Если payload пустой или имеет неожиданный тип
+                        # (например, None)
                         logger.debug(
-                            f"Ошибка структуры payload при чтении тела письма: {e}"
+                            "Ошибка структуры payload при чтении тела "
+                            f"письма: {e}"
                         )
                         continue
                     # except Exception as e:
                     #     logger.warning(
-                    #         f"Неожиданная ошибка при обработке части письма: "
-                    #         f"{type(e).__name__}: {e}"
+                    #         "Неожиданная ошибка при обработке части "
+                    #         f"письма: {type(e).__name__}: {e}"
                     #     )
                     #     continue
         else:
@@ -380,9 +416,15 @@ class PriceLoader:
                 elif body_payload and isinstance(body_payload, str):
                     # Если уже строка, просто возвращаем
                     return body_payload
-            except (UnicodeDecodeError, LookupError, TypeError, ValueError) as e:
+            except (
+                UnicodeDecodeError,
+                LookupError,
+                TypeError,
+                ValueError,
+            ) as e:
                 logger.warning(
-                    f"Ошибка декодирования тела письма: " f"{type(e).__name__}: {e}"
+                    f"Ошибка декодирования тела письма: "
+                    f"{type(e).__name__}: {e}"
                 )
                 return None
             # except Exception as e:
@@ -413,11 +455,14 @@ class PriceLoader:
 
                     encoded_url = match.group(1)
                     try:
-                        decoded = base64.b64decode(encoded_url).decode("utf-8")
+                        decoded = base64.b64decode(encoded_url).decode(
+                            "utf-8"
+                        )
                         logger.debug(f"Декодирован URL из трекера: {url}")
                     except (binascii.Error, UnicodeDecodeError) as e:
                         logger.debug(
-                            f"Ошибка при декодировании URL из трекера: {e}, URL: {url}"
+                            f"Ошибка при декодировании URL из трекера: {e}, "
+                            f"URL: {url}"
                         )
                     else:
                         return decoded
@@ -435,7 +480,9 @@ class PriceLoader:
                 details="Проверьте наличие писем от отправителя прайсов",
             )
 
-    async def _find_file_in_drive(self, folder_link: str, filename: str) -> str | None:
+    async def _find_file_in_drive(
+        self, folder_link: str, filename: str
+    ) -> str | None:
         """
         Ищет файл в папке Google Drive.
 
@@ -456,7 +503,10 @@ class PriceLoader:
                 raise DriveApiError(
                     error_code="DRIVE_001",
                     message="Превышен лимит запросов к Google Drive API",
-                    details="Попробуйте позже или увеличьте интервалы между запросами",
+                    details=(
+                        "Попробуйте позже или увеличьте интервалы между "
+                        "запросами"
+                    ),
                 ) from e
             raise DriveApiError(
                 error_code="DRIVE_002",
@@ -470,7 +520,9 @@ class PriceLoader:
                 details=str(e),
             ) from e
 
-    def _find_file_in_drive_sync(self, folder_link: str, filename: str) -> str | None:
+    def _find_file_in_drive_sync(
+        self, folder_link: str, filename: str
+    ) -> str | None:
         """
         Синхронный метод поиска файла в Google Drive.
         """
@@ -484,7 +536,9 @@ class PriceLoader:
 
             folder_id = self._extract_folder_id(folder_link)
             if not folder_id:
-                logger.error(f"Не удалось извлечь ID папки из ссылки: {folder_link}")
+                logger.error(
+                    f"Не удалось извлечь ID папки из ссылки: {folder_link}"
+                )
                 return None
 
             logger.debug(f"Ищем файл '{filename}' в папке ID: {folder_id}")
@@ -518,7 +572,9 @@ class PriceLoader:
             filename_lower = filename.lower()
             for file in files:
                 if filename_lower in file["name"].lower():
-                    logger.info(f"Найден файл: {file['name']} (ID: {file['id']})")
+                    logger.info(
+                        f"Найден файл: {file['name']} (ID: {file['id']})"
+                    )
                     return file["id"]  # type: ignore[no-any-return]
 
             # Если точное совпадение не найдено, логируем список файлов
@@ -585,7 +641,9 @@ class PriceLoader:
             output_path: Путь для сохранения файла
         """
         try:
-            await asyncio.to_thread(self._download_file_sync, file_id, output_path)
+            await asyncio.to_thread(
+                self._download_file_sync, file_id, output_path
+            )
             logger.info(f"Файл успешно скачан: {output_path}")
 
         except Exception as e:
@@ -599,10 +657,14 @@ class PriceLoader:
         """
         Синхронный метод скачивания файла.
         """
-        download_url = f"https://drive.google.com/uc?id={file_id}&export=download"
+        download_url = (
+            f"https://drive.google.com/uc?id={file_id}&export=download"
+        )
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            )
         }
 
         try:
@@ -627,7 +689,9 @@ class PriceLoader:
             # Проверяем, что файл скачан
             if output_path.exists() and output_path.stat().st_size > 0:
                 file_size_mb = output_path.stat().st_size / (1024 * 1024)
-                logger.info(f"Файл скачан успешно. Размер: {file_size_mb:.2f} MB")
+                logger.info(
+                    f"Файл скачан успешно. Размер: {file_size_mb:.2f} MB"
+                )
             else:
                 raise DriveApiError(
                     error_code="FILE_EMPTY_OR_NOT_FOUND",
@@ -652,14 +716,17 @@ class PriceLoader:
             self._validate_supplier_data(supplier_data)
 
             # Обработка данных
-            supplier_data["code"] = supplier_data["code"].astype(str).str.strip()
+            supplier_data["code"] = (
+                supplier_data["code"].astype(str).str.strip()
+            )
             logger.info(f"Загружено {len(supplier_data)} записей поставщика")
 
         except SupplierDataError:
             raise
         except Exception as e:
             raise SupplierDataError(
-                message="Ошибка при получении данных поставщика", details=str(e)
+                message="Ошибка при получении данных поставщика",
+                details=str(e),
             ) from e
         else:
             return supplier_data
@@ -705,7 +772,9 @@ class PriceLoader:
 
             # 3. Заполнение пропусков
             logger.info("Заполнение пропущенных данных...")
-            filled_df = await asyncio.to_thread(self._fill_missing_data, merged_df)
+            filled_df = await asyncio.to_thread(
+                self._fill_missing_data, merged_df
+            )
 
             # 4. Применение правил обработки
             logger.info("Применение правил обработки...")
@@ -735,7 +804,9 @@ class PriceLoader:
         else:
             return output_file
 
-    def _read_excel_with_header(self, file_path: Path) -> tuple[pd.DataFrame, int]:
+    def _read_excel_with_header(
+        self, file_path: Path
+    ) -> tuple[pd.DataFrame, int]:
         """
         Читает Excel файл, автоматически определяя строку с заголовками.
 
@@ -765,7 +836,9 @@ class PriceLoader:
 
             # Проверяем обязательные колонки
             required_columns = ["Код", "Наименование", "Цена"]
-            missing_columns = [col for col in required_columns if col not in df.columns]
+            missing_columns = [
+                col for col in required_columns if col not in df.columns
+            ]
 
             self._validate_missing_columns(missing_columns, df)
 
@@ -797,7 +870,9 @@ class PriceLoader:
         if missing_columns:
             raise ExcelProcessingError(
                 error_code="EXCEL_MISSING_COLUMS",
-                message=f"Отсутствуют обязательные колонки: {missing_columns}",
+                message=(
+                    f"Отсутствуют обязательные колонки: {missing_columns}"
+                ),
                 details=f"Доступные колонки: {list(df.columns)}",
             )
 
@@ -914,12 +989,19 @@ class PriceLoader:
     def _fill_from_product_name(self, df: pd.DataFrame) -> pd.DataFrame:
         def _update_row(row: pd.Series) -> pd.Series:
             name = row["Наименование"]
-            if any(keyword in name.lower() for keyword in ["лицензия", "***"]):
+            if any(
+                keyword in name.lower() for keyword in ["лицензия", "***"]
+            ):
                 row["category"] = "Элит Парфюм"
                 row["subcategory"] = "Лицензия***"
             elif any(
                 keyword in name.lower()
-                for keyword in ["vintag", "винтаж", "novaya zarya", "косметика"]
+                for keyword in [
+                    "vintag",
+                    "винтаж",
+                    "novaya zarya",
+                    "косметика",
+                ]
             ) or ("MONTALE" in name and "декодированный" in name):
                 row["category"] = "NO"
                 row["subcategory"] = "NO"
@@ -941,18 +1023,25 @@ class PriceLoader:
         # Маска строк, где значения вперед и назад совпадают
         mask = (
             (forward_filled["category"] == backward_filled["category"])
-            & (forward_filled["subcategory"] == backward_filled["subcategory"])
+            & (
+                forward_filled["subcategory"]
+                == backward_filled["subcategory"]
+            )
             & (result_df["category"].isna() | result_df["subcategory"].isna())
         )
 
         # Заполняем совпадающие строки
         result_df.loc[mask, "category"] = forward_filled.loc[mask, "category"]
-        result_df.loc[mask, "subcategory"] = forward_filled.loc[mask, "subcategory"]
+        result_df.loc[mask, "subcategory"] = forward_filled.loc[
+            mask, "subcategory"
+        ]
         result_df.loc[mask, "_filled_by_neighbors"] = True
 
         filled_count = mask.sum()
         if filled_count > 0:
-            logger.info(f"Заполнено {filled_count} строк на основе соседних значений")
+            logger.info(
+                f"Заполнено {filled_count} строк на основе соседних значений"
+            )
 
         return result_df
 
@@ -963,8 +1052,8 @@ class PriceLoader:
         subgroup_col: str = "subcategory",
     ) -> pd.DataFrame:
         """
-        Заполняет пропущенные значения на основе совпадающих значений выше и ниже.
-        Помечает строки, которые были заполнены.
+        Заполняет пропущенные значения на основе совпадающих значений выше и
+        ниже. Помечает строки, которые были заполнены.
 
         Args:
             df: Исходный DataFrame
@@ -994,9 +1083,9 @@ class PriceLoader:
                 upper_group = None
                 upper_subgroup = None
                 for j in range(i - 1, -1, -1):
-                    if not pd.isna(result_df.at[j, group_col]) and not pd.isna(
-                        result_df.at[j, subgroup_col]
-                    ):
+                    if not pd.isna(
+                        result_df.at[j, group_col]
+                    ) and not pd.isna(result_df.at[j, subgroup_col]):
                         upper_group = result_df.at[j, group_col]
                         upper_subgroup = result_df.at[j, subgroup_col]
                         break
@@ -1005,9 +1094,9 @@ class PriceLoader:
                 lower_group = None
                 lower_subgroup = None
                 for j in range(i + 1, len(result_df)):
-                    if not pd.isna(result_df.at[j, group_col]) and not pd.isna(
-                        result_df.at[j, subgroup_col]
-                    ):
+                    if not pd.isna(
+                        result_df.at[j, group_col]
+                    ) and not pd.isna(result_df.at[j, subgroup_col]):
                         lower_group = result_df.at[j, group_col]
                         lower_subgroup = result_df.at[j, subgroup_col]
                         break
@@ -1082,7 +1171,11 @@ class PriceLoader:
         return output_path
 
     def _save_to_excel_with_formatting(
-        self, original_file: Path, output_file: Path, df: pd.DataFrame, header_row: int
+        self,
+        original_file: Path,
+        output_file: Path,
+        df: pd.DataFrame,
+        header_row: int,
     ) -> None:
         """
         Сохраняет DataFrame в Excel с сохранением форматирования оригинала.
@@ -1136,7 +1229,8 @@ class PriceLoader:
         header_row: int,
     ) -> None:
         """
-        Записывает данные обратно в Excel с сохранением оригинального форматирования
+        Записывает данные обратно в Excel с сохранением оригинального
+        форматирования
         """
 
         # Загружаем оригинальную книгу
@@ -1147,7 +1241,9 @@ class PriceLoader:
         category_col = get_column_letter(
             df_merged.columns.get_loc("category") + 1
         )
-        subgroup_col = get_column_letter(df_merged.columns.get_loc("subcategory") + 1)
+        subgroup_col = get_column_letter(
+            df_merged.columns.get_loc("subcategory") + 1
+        )
 
         # Записываем заголовки новых колонок
         ws[f"{category_col}{header_row + 1}"] = "Группа товара"
@@ -1155,7 +1251,9 @@ class PriceLoader:
 
         # Записываем данные
         for idx, row in df_merged.iterrows():
-            excel_row = header_row + 2 + idx  # +2 потому что заголовок на header_row+1
+            excel_row = (
+                header_row + 2 + idx
+            )  # +2 потому что заголовок на header_row+1
 
             # Записываем category
             category = row["category"]
@@ -1183,8 +1281,12 @@ class PriceLoader:
             group_missing = df["category"].isna().sum()
             subgroup_missing = df["subcategory"].isna().sum()
 
-            group_fill_rate = ((total_rows - group_missing) / total_rows) * 100
-            subgroup_fill_rate = ((total_rows - subgroup_missing) / total_rows) * 100
+            group_fill_rate = (
+                (total_rows - group_missing) / total_rows
+            ) * 100
+            subgroup_fill_rate = (
+                (total_rows - subgroup_missing) / total_rows
+            ) * 100
 
             logger.info(
                 f"Статистика обработки:\n"
@@ -1222,33 +1324,42 @@ class PriceLoader:
                     #         if not any(parent_dir.iterdir()):
                     #             await asyncio.to_thread(parent_dir.rmdir)
                     #             logger.debug(
-                    #                 f"Удалена пустая директория: {parent_dir}"
+                    #                 "Удалена пустая директория: "
+                    #                 f"{parent_dir}"
                     #             )
                     #     except OSError as e:
                     #         # Игнорируем ошибки удаления директории
                     #         #  (может быть не пуста)
                     #         logger.debug(
-                    #             f"Не удалось удалить директорию {parent_dir}: {e}"
+                    #             "Не удалось удалить директорию "
+                    #             f"{parent_dir}: {e}"
                     #         )
 
                 except FileNotFoundError:
                     logger.debug(f"Файл уже удален: {file_path}")
                 except PermissionError as e:
-                    logger.warning(f"Нет прав на удаление файла {file_path}: {e}")
+                    logger.warning(
+                        f"Нет прав на удаление файла {file_path}: {e}"
+                    )
                 except OSError as e:
                     # Ловим все OS-специфичные ошибки
-                    logger.warning(f"Ошибка ОС при удалении файла {file_path}: {e}")
+                    logger.warning(
+                        f"Ошибка ОС при удалении файла {file_path}: {e}"
+                    )
                 except RuntimeError as e:
                     # Ошибки, связанные с asyncio.to_thread
                     logger.warning(
-                        f"Ошибка выполнения при удалении файла {file_path}: {e}"
+                        "Ошибка выполнения при удалении файла "
+                        f"{file_path}: {e}"
                     )
 
 
 # Dependency для FastAPI
 def get_price_loader(
     settings: Annotated[Any, Depends(lambda: settings)],
-    supplier_codes_repo: Annotated[SupplierCodesRepo, Depends(get_supplier_codes_repo)],
+    supplier_codes_repo: Annotated[
+        SupplierCodesRepo, Depends(get_supplier_codes_repo)
+    ],
     file_uploader: Annotated[FileUploader, Depends(get_file_uploader)],
     supplier_id: int = PriceLoader.DEFAULT_SUPPLIER_ID,
 ) -> PriceLoader:

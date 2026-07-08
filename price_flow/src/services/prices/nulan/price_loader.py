@@ -5,12 +5,9 @@ import uuid
 
 from datetime import UTC
 from pathlib import Path
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, cast
 
-import aiofiles.os as aios  # type: ignore[import-untyped]
-
-# from django.core.exceptions import ObjectDoesNotExist
-# from django.db.models import Max
+import aiofiles.os as aios
 import numpy as np
 import pandas as pd
 import requests
@@ -20,11 +17,13 @@ import requests
 from fastapi import Depends, UploadFile
 from pandas import DataFrame
 
-from core.exceptions import (
+from core.exceptions.app_exceptions import (
     ApiError,
     DataProcessingError,
     DownloadError,
     ErrorMessages,
+)
+from core.exceptions.file import (
     FileAppNotFoundError,
     FileUploadError,
     ZipExtractionError,
@@ -58,7 +57,7 @@ from .config import (
 )
 
 
-FOLDER = 'uploads/'
+FOLDER = "uploads/"
 
 
 class PriceLoader:
@@ -77,13 +76,15 @@ class PriceLoader:
         self.supplier_clothing_repo = supplier_clothing_repo
         self.file_uploader = file_uploader
         self.converter = converter
-        self.base_dir = base_dir or settings.BASE_DIR
-        self.api_url = settings.NULAN_API_URL
-        self.public_key = settings.NULAN_PRICES_URL
+        self.base_dir = base_dir or settings.app.base_dir
+        self.api_url = settings.price.nulan_api_url
+        self.public_key = settings.price.nulan_price_url
         self.supplier_id = supplier_id
 
         # Определяем папку для временных файлов
-        self.temp_dir = self.base_dir / Path(FOLDER_NAME) / Path(TEMP_FOLDER_NAME)
+        self.temp_dir = (
+            self.base_dir / Path(FOLDER_NAME) / Path(TEMP_FOLDER_NAME)
+        )
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
     async def process_price(self) -> DataFrame:
@@ -100,9 +101,13 @@ class PriceLoader:
             # price_as_is = self.temp_dir / "price_as_is.xlsx"
             df = self.supplier_clothing_repo.save_price_as_is()
         except Exception as e:
-            logger.error("Критическая ошибка при синхронизации", exc_info=True)
+            logger.error(
+                "Критическая ошибка при синхронизации", exc_info=True
+            )
             error_code = "PROCESS_PRICE_ERROR"
-            raise DownloadError(error_code, f"Сбой синхронизации: {e!s}") from e
+            raise DownloadError(
+                error_code, f"Сбой синхронизации: {e!s}"
+            ) from e
         else:
             return df
 
@@ -111,40 +116,60 @@ class PriceLoader:
         Асинхронная обертка для получения содержимого папки.
         """
         items = await asyncio.to_thread(
-            self._fetch_directory_content_sync,
-            public_url
+            self._fetch_directory_content_sync, public_url
         )
         await self._process_directory_items(items)
 
-    def _fetch_directory_content_sync(self, public_url: str) -> list[dict[str, Any]]:
+    def _fetch_directory_content_sync(
+        self, public_url: str
+    ) -> list[dict[str, Any]]:
         """
-        Синхронный метод: получает метаданные папки через API и запускает обработку элементов.
+        Синхронный метод: получает метаданные папки через API и запускает
+        обработку элементов.
         """
-        params: dict[str, Any] = {
-            "public_key": public_url,
-            "limit": 1000
-        }
-
+        params: dict[str, Any] = {"public_key": public_url, "limit": 1000}
+        error_code = "API_STRUCTURE_ERROR"
         try:
             response = requests.get(self.api_url, params=params, timeout=1000)
             if response.status_code != 200:
-                error_message = f"Ошибка доступа к API: {response.status_code}"
+                error_message = (
+                    f"Ошибка доступа к API: {response.status_code}"
+                )
                 raise ApiError(error_message)
 
-            data = response.json()
-            items = data.get("_embedded", {}).get("items", [])
+            data: dict[str, Any] = response.json()
+
+            # Проверяем структуру, чтобы избежать KeyError
+            embedded = data.get("_embedded")
+            if not isinstance(embedded, dict):
+                raise ApiError(
+                    error_code, "Некорректный ответ API (ожидается _embedded)"
+                )
+
+            items = embedded.get("items", [])
+            if not isinstance(items, list):
+                raise ApiError(
+                    error_code,
+                    "Некорректный ответ API (ожидается список items)",
+                )
+
+            # Приводим к нужному типу (для mypy)
+            # return cast("list[dict[str, Any]]", items)
+
+            # items = data.get("_embedded", {}).get("items", [])
 
         except requests.RequestException as e:
             error_message = f"Ошибка запроса к API: {e!s}"
             raise ApiError(error_message) from e
         except KeyError as e:
             logger.error(f"Ошибка структуры ответа API: {e}")
-            error_code = "API_STRUCTURE_ERROR"
             raise ApiError(error_code, "Некорректный ответ API") from e
         else:
-            return items
+            return cast("list[dict[str, Any]]", items)
 
-    async def _process_directory_items(self, items: list[dict[str, Any]]) -> None:
+    async def _process_directory_items(
+        self, items: list[dict[str, Any]]
+    ) -> None:
         """
         Обрабатывает список элементов (файлов и папок), полученных из API.
         """
@@ -168,66 +193,73 @@ class PriceLoader:
         Асинхронная обертка для скачивания файла.
         """
         try:
-            await asyncio.to_thread(
-                self._download_file_sync,
-                url,
-                filename
-            )
-        except Exception as e:
+            await asyncio.to_thread(self._download_file_sync, url, filename)
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Error load {filename}: {url} {e}")
 
     def _download_file_sync(self, url: str, original_filename: str) -> None:
         """
-        Синхронный метод: скачивает файл и сохраняет его под каноническим именем.
+        Синхронный метод: скачивает файл и сохраняет его под каноническим
+        именем.
         """
+        # 1. Определяем каноническое имя файла по маппингу
+        # Если имени нет в маппинге, оставляем оригинальное
+        target_filename = FILENAME_MAPPING.get(
+            original_filename, original_filename
+        )
+        save_path: Path = self.temp_dir / target_filename
+        # 2. Выполняем запрос с обработкой исключений
         try:
-            # 1. Определяем каноническое имя файла по маппингу
-            # Если имени нет в маппинге, оставляем оригинальное
-            target_filename = FILENAME_MAPPING.get(original_filename, original_filename)
-
-            # Формируем полный путь сохранения
-            save_path = self.temp_dir / target_filename
-
             logger.debug(f"Загрузка файла: {target_filename} из {url}")
 
             # 2. Скачивание
             response = requests.get(url, stream=True, timeout=1000)
-
-            if response.status_code == 200:
-                with open(save_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                logger.info(f"Файл успешно сохранен: {save_path}")
-            else:
-                logger.warning(
-                    f"Не удалось скачать файл {target_filename}. Статус: {response.status_code}"
-                )
-                raise DownloadError(f"DOWNLOAD_FAILED_{response.status_code}", f"Ошибка скачивания: {target_filename}")
-
+            response.raise_for_status()
+        except requests.RequestException as e:
+            error_msg = f"Request failed for {target_filename}: {e}"
+            logger.error(error_msg)
+            error_code = (
+                f"DOWNLOAD_FAILED status code: {response.status_code}"
+            )
+            raise DownloadError(
+                error_code, error_msg, details={"url": url}
+            ) from e
+        # 2. Сохраняем файл (используем Path.open())
+        try:
+            with save_path.open("wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
         except OSError as e:
-            logger.error(f"Ошибка записи файла {original_filename}: {e}")
-            raise DownloadError("FILE_WRITE_ERROR", "Ошибка записи на диск")
+            error_msg = f"File write error for {original_filename}"
+            logger.error(error_msg, exc_info=True)
+            error_code = "FILE_WRITE_ERROR"
+            raise DownloadError(error_code, error_msg) from e
         except Exception as e:
-            logger.error(f"Неожиданная ошибка при скачивании {original_filename}: {e}")
+            # Ловим всё остальное, но логируем и пробрасываем
+            logger.error(f"Unexpected error: {e}", exc_info=True)
             raise
 
-    async def _parse_files(self):
+        logger.info(f"File successfully saved: {save_path}")
+
+    async def _parse_files(self) -> None:
         code_max = await self.supplier_clothing_repo.get_max_code_async(
             self.supplier_id
         )
         current_code = code_max + 1
-        await self.supplier_clothing_repo.clear_supplier_price(self.supplier_id)
+        await self.supplier_clothing_repo.clear_supplier_price(
+            self.supplier_id
+        )
         for _, file in FILENAME_MAPPING.items():
-            current_code = await self._parse_file(self.temp_dir / file, current_code)
+            await self._parse_file(self.temp_dir / file, current_code)
             # break
 
-    async def _parse_file(self, file, current_code: int):
+    async def _parse_file(self, file: str | Path, current_code: int) -> None:
         print(datetime.datetime.now(UTC).time())
-        print(f'----------- {file} ---------------')
+        print(f"----------- {file} ---------------")
         repo = self.supplier_clothing_repo
         inf = pd.read_excel(file, skiprows=PRODUCT_SKIP_HEAD_ROWS)
         sizes: list[str] = []
-        product_name = ''
+        product_name = ""
         product_price = 0
         price_supplier: list[SupplierProductPrice] = []
         for s in inf.itertuples():
@@ -236,7 +268,9 @@ class PriceLoader:
                 if file == self.temp_dir / FILE_CHANGE:
                     product_name = product_name.replace("cont", "Conte")
                 product_price = s[PRODUCT_PRICE_COLUMN]
-                product_price = 0 if np.isnan(product_price) else product_price
+                product_price = (
+                    0 if np.isnan(product_price) else product_price
+                )
                 sizes.clear()
                 for i in PRODUCT_SIZE_RANGE:
                     size = s[i]
@@ -248,26 +282,33 @@ class PriceLoader:
                     for i, size in enumerate(sizes):
                         remains = s[i + PRODUCT_START_REMAINS_COLUMN]
                         if isinstance(remains, str):
-                            supplier_product = await repo.get_supplier_product(
-                                self.supplier_id, product_name, size, product_color
+                            supplier_product = (
+                                await repo.get_supplier_product(
+                                    self.supplier_id,
+                                    product_name,
+                                    size,
+                                    product_color,
+                                )
                             )
                             if supplier_product:
                                 code = supplier_product.code
                                 brand = supplier_product.category
                                 subgroup = supplier_product.subcategory
-                                brands = await repo.get_supplier_category_by_code(
-                                    self.supplier_id, code
+                                brands = (
+                                    await repo.get_supplier_category_by_code(
+                                        self.supplier_id, code
+                                    )
                                 )
                                 if brands:
                                     brand = brands.category
                                     subgroup = brands.subcategory
                             else:
-                                code, brand, subgroup = current_code, '?', '?'
+                                code, brand, subgroup = current_code, "?", "?"
                                 current_code += 1
 
                             supplier_product_price = SupplierProductPrice(
                                 code=code,
-                                name=f'{product_name} {size} {product_color}',
+                                name=f"{product_name} {size} {product_color}",
                                 category=brand,
                                 subcategory=subgroup,
                                 supplier_id=self.supplier_id,
@@ -279,7 +320,7 @@ class PriceLoader:
                             price_supplier.append(supplier_product_price)
 
         await repo.add_supplier_price(price_supplier)
-        return current_code
+        # return current_code
 
     async def load_products(self, file: UploadFile) -> UploadResult:
         """
@@ -293,11 +334,13 @@ class PriceLoader:
             # 1. Загрузка ZIP файла
             upload_response = await self.file_uploader.upload_file(file)
             self._validate_upload_response(upload_response)
-            zip_file_path = Path(upload_response.details["file_path"])  # type: ignore
+            zip_file_path = Path(upload_response.details["file_path"])
 
             # 2. Подготовка директории для распаковки
             # Создаем временную папку с UUID, чтобы избежать конфликтов
-            extract_subdir = f"{zip_file_path.stem}_extracted_{uuid.uuid4().hex[:8]}"
+            extract_subdir = (
+                f"{zip_file_path.stem}_extracted_{uuid.uuid4().hex[:8]}"
+            )
             extract_dir = zip_file_path.parent / extract_subdir
             extract_dir.mkdir(exist_ok=True)
 
@@ -314,7 +357,7 @@ class PriceLoader:
             xlsx_file_path = all_files[0]
 
             # 5. Загрузка в БД
-            db_result = await self.load_file_to_db(str(xlsx_file_path))
+            await self.load_file_to_db(str(xlsx_file_path))
 
             # 6
             price_filename = self.temp_dir / Path("price.xlsx")
@@ -323,9 +366,6 @@ class PriceLoader:
             # 7. Конвертация
             logger.info("Конвертация Excel файла...")
             upload_result = self.converter.upload_file(price_filename)
-
-            return upload_result
-
         except (
             # FileSizeError,
             ZipExtractionError,
@@ -342,7 +382,8 @@ class PriceLoader:
             logger.exception(f"Критическая ошибка в load_file: {e}")
             error_message = "Внутренняя ошибка при обработке файла"
             raise RuntimeError(error_message) from e
-
+        else:
+            return upload_result
         finally:
             # 6. Гарантированная очистка ресурсов
             if zip_file_path and zip_file_path.exists():
@@ -351,19 +392,22 @@ class PriceLoader:
             if extract_dir and extract_dir.exists():
                 await remove_directory_async(extract_dir)
 
-
-    def _validate_upload_response(self, upload_response: SuccessResponse) -> None:
+    def _validate_upload_response(
+        self, upload_response: SuccessResponse
+    ) -> None:
         if not upload_response.details:
             error_message = "File not uploaded"
             raise FileUploadError(error_message)
 
-    async def _unzip_file_async(self, zip_path: Path, extract_to: Path) -> None:
+    async def _unzip_file_async(
+        self, zip_path: Path, extract_to: Path
+    ) -> None:
         """
         Запускает распаковку в отдельном потоке.
         """
 
-        def _unzip_task() -> bool:
-            return extract_zip(str(zip_path), str(extract_to))
+        def _unzip_task() -> None:
+            extract_zip(str(zip_path), str(extract_to))
 
         try:
             await asyncio.to_thread(_unzip_task)
@@ -375,7 +419,8 @@ class PriceLoader:
 
         except Exception as e:
             logger.error(
-                f"Ошибка распаковки архива {zip_path.name}: {e}", exc_info=True
+                f"Ошибка распаковки архива {zip_path.name}: {e}",
+                exc_info=True,
             )
             error_message = f"Ошибка при распаковке архива: {zip_path.name}"
             raise ZipExtractionError(zip_path, error_message) from e
@@ -384,18 +429,18 @@ class PriceLoader:
         if not files:
             raise DataProcessingError(ErrorMessages.ERR_MSG_CSV_NOT_FOUND)
 
-    async def load_file_to_db(self, unpacked_file_path: str) -> dict[str, Any]:
-        return await self.supplier_clothing_repo.load_data(
+    async def load_file_to_db(self, unpacked_file_path: str) -> None:
+        await self.supplier_clothing_repo.load_data(
             unpacked_file_path, "supplier_price"
         )
 
-    def save_price_for_load(self, file_name: str | Path):
+    def save_price_for_load(self, file_name: str | Path) -> None:
         data_frame = self.supplier_clothing_repo.save_price_for_load()
         excel_file_path = file_name
-        brand = ''
-        subgroup = ''
+        brand = ""
+        subgroup = ""
         price_all = []
-        price_all.append(['', '', ''])
+        price_all.append(["", "", ""])
         for s in data_frame.itertuples():
             brand_current = s.category
             subgroup_current = s.subcategory
@@ -405,18 +450,19 @@ class PriceLoader:
             if brand != brand_current:
                 brand = brand_current
                 # print(f'{brand} =================')
-                price_all.append(['', brand, ''])
+                price_all.append(["", brand, ""])
             if subgroup != subgroup_current:
                 subgroup = subgroup_current
-                price_all.append(['', subgroup, ''])
+                price_all.append(["", subgroup, ""])
                 # print(f'{subgroup} ---------------')
             # print(code, name, price)
             price_all.append([code, name, price])
-        df = pd.DataFrame(price_all, columns=['code', 'name', 'price'])
+        df = pd.DataFrame(price_all, columns=["code", "name", "price"])
         df.to_excel(excel_file_path, index=False)
 
-    async def upd_table(self):
+    async def upd_table(self) -> None:
         await self.supplier_clothing_repo.fix_supplier_id_type()
+
 
 async def remove_file_async(file_path: str | Path) -> bool:
     """

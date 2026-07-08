@@ -7,10 +7,12 @@ from schemas.response_schemas import SuccessResponse
 from services.prices.load_codes import LoaderCodes, get_loader_codes
 
 
-load_supplier_product_codes_router = APIRouter(dependencies=[Depends(verify_api_key)])
+load_supplier_product_codes_router = APIRouter(
+    dependencies=[Depends(verify_api_key)]
+)
 
 
-@load_supplier_product_codes_router.post(  # type: ignore[misc]
+@load_supplier_product_codes_router.post(
     "/load-all-codes", summary="Upload supplier product codes"
 )
 async def load_all_codes(

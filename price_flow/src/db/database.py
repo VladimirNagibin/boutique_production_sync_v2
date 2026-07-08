@@ -1,4 +1,3 @@
-
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -16,6 +15,7 @@ async def get_db_connection() -> aiosqlite.Connection:
 
     return conn
 
+
 @asynccontextmanager
 async def get_db() -> AsyncGenerator[aiosqlite.Connection]:
     """Асинхронный контекстный менеджер для работы с БД"""
@@ -29,15 +29,21 @@ async def get_db() -> AsyncGenerator[aiosqlite.Connection]:
     finally:
         await conn.close()
 
+
 async def get_db_dependency() -> AsyncGenerator[aiosqlite.Connection]:
     """Dependency для FastAPI"""
     async with get_db() as conn:
         yield conn
 
-async def init_db():
+
+async def init_db() -> None:
     """Инициализация базы данных"""
     async with get_db() as conn:
-        await conn.execute("PRAGMA foreign_keys = ON")  # Включить внешние ключи
-        await conn.execute("PRAGMA journal_mode = WAL")  # Режим WAL для конкурентности
+        await conn.execute(
+            "PRAGMA foreign_keys = ON"
+        )  # Включить внешние ключи
+        await conn.execute(
+            "PRAGMA journal_mode = WAL"
+        )  # Режим WAL для конкурентности
         await conn.executescript(sql_script_create_table)
         await conn.commit()

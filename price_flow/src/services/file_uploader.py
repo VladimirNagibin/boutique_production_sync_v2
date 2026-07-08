@@ -6,14 +6,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import aiofiles  # type: ignore[import-untyped]
+import aiofiles
 
 from fastapi import UploadFile
 
-from core.exceptions import (
-    ErrorMessages,
+from core.exceptions.enums import ErrorMessages
+from core.exceptions.file import (
     FileNotZipError,
-    FileSizeError,
+    FileSystemError,
+    FileTooLargeError,
     ZipExtractionError,
 )
 from core.logger import logger
@@ -26,13 +27,14 @@ MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB максимальный размер
 
 
 class FileUploader:
-
     def __init__(
         self,
         upload_dir: str | None = None,
         max_file_size: int | None = None,
     ):
-        self.upload_dir = settings.BASE_DIR / Path(upload_dir or UPLOAD_DIR)
+        self.upload_dir = settings.app.base_dir / Path(
+            upload_dir or UPLOAD_DIR
+        )
         self.max_file_size = int(max_file_size or MAX_FILE_SIZE)
 
         self.upload_dir.mkdir(parents=True, exist_ok=True)
@@ -52,7 +54,7 @@ class FileUploader:
 
         Raises:
             FileNotZipError: Если файл не является ZIP архивом
-            FileSizeError: Если размер файла превышает лимит
+            FileTooLargeError: Если размер файла превышает лимит
             ZipExtractionError: Если не удалось проверить ZIP архив
             Exception: При других ошибках сохранения файла
         """
@@ -87,14 +89,15 @@ class FileUploader:
             )
 
             logger.info(
-                f"Файл успешно сохранен: {file_path} (Размер: {file_size} байт)"
+                f"Файл успешно сохранен: {file_path} (Размер: {file_size} "
+                "байт)"
             )
 
             return SuccessResponse(
                 message="ZIP файл успешно сохранен", details=file_info
             )
 
-        except (FileSizeError, ZipExtractionError, FileNotZipError) as e:
+        except (FileTooLargeError, ZipExtractionError, FileNotZipError) as e:
             # Ожидаемые ошибки бизнес-логики
             logger.warning(f"Ошибка валидации файла {original_name}: {e}")
             await self._safe_remove_file(file_path)
@@ -102,11 +105,11 @@ class FileUploader:
         except Exception as e:
             # Непредвиденные системные ошибки
             logger.exception(
-                f"Критическая ошибка при сохранении файла {original_name}: {e}"
+                f"Критическая ошибка при сохранении файла {original_name}: "
+                f"{e}"
             )
             await self._safe_remove_file(file_path)
-            # Создаем более конкретное исключение вместо голого Exception (TRY002)
-            raise RuntimeError(ErrorMessages.ERR_MSG_SAVE_FAILED) from e
+            raise FileSystemError(ErrorMessages.SAVE_FAILED.message) from e
 
     def _validate_file_extension(self, file: UploadFile) -> None:
         """
@@ -120,11 +123,12 @@ class FileUploader:
         """
         if not file.filename or not file.filename.lower().endswith(".zip"):
             logger.warning(
-                f"Попытка загрузки файла с неверным расширением: {file.filename}"
+                "Попытка загрузки файла с неверным расширением: "
+                f"{file.filename}"
             )
             raise FileNotZipError(
                 file.filename if file.filename else "empty_filename",
-                ErrorMessages.ERR_MSG_NOT_ZIP,
+                ErrorMessages.NOT_ZIP.message,
             )
 
     def _get_save_directory(self, save_subpath: str | None = None) -> Path:
@@ -140,9 +144,9 @@ class FileUploader:
         if save_subpath:
             # Очищаем путь от потенциально опасных символов
             safe_subpath = Path(save_subpath).name
-            save_dir = self.upload_dir / safe_subpath
+            save_dir: Path = self.upload_dir / safe_subpath
         else:
-            save_dir = self.upload_dir
+            save_dir = Path(self.upload_dir)
 
         # Создаем директорию если ее нет
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -180,7 +184,7 @@ class FileUploader:
             int: Размер сохраненного файла в байтах
 
         Raises:
-            FileSizeError: Если размер файла превышает лимит
+            FileTooLargeError: Если размер файла превышает лимит
         """
         file_size = 0
         chunk_size = 1024 * 1024  # 1MB
@@ -194,13 +198,13 @@ class FileUploader:
 
                     await buffer.write(chunk)
 
-        except FileSizeError:
+        except FileTooLargeError:
             # Пробрасываем дальше, чтобы удалить файл в блоке выше
             raise
         except OSError as e:
             # Ошибки диска (нет места, права доступа)
             logger.error(f"Ошибка записи на диск: {e}")
-            raise RuntimeError(ErrorMessages.ERR_MSG_SAVE_FAILED) from e
+            raise RuntimeError(ErrorMessages.SAVE_FAILED.message) from e
 
         return file_size
 
@@ -209,16 +213,21 @@ class FileUploader:
     ) -> None:
         """
         Проверяет размер файла. Выбрасывает исключение, если лимит превышен.
-        Этот метод создан для соблюдения принципа 'Abstract raise to inner function'.
         """
         if current_size > self.max_file_size:
             limit_mb = self.max_file_size / (1024 * 1024)
             logger.warning(
-                f"Превышен лимит размера файла: {current_size} > {self.max_file_size}"
+                f"Превышен лимит размера файла: {current_size} > "
+                f"{self.max_file_size}"
             )
-            error_message = f"{ErrorMessages.ERR_MSG_SIZE_LIMIT} ({limit_mb:.2f}MB)"
-            raise FileSizeError(
-                file_path, error_message, max_file_size=self.max_file_size
+            error_message = (
+                f"{ErrorMessages.SIZE_LIMIT.message} ({limit_mb:.2f}MB)"
+            )
+            raise FileTooLargeError(
+                file_path,
+                file_size=current_size,
+                message=error_message,
+                max_file_size=self.max_file_size,
             )
 
     async def _validate_zip_file(self, file_path: Path) -> dict[str, Any]:
@@ -256,13 +265,13 @@ class FileUploader:
         except zipfile.BadZipFile as e:
             logger.warning(f"Невалидный ZIP архив: {file_path.name}")
             raise ZipExtractionError(
-                file_path, ErrorMessages.ERR_MSG_INVALID_ZIP
+                file_path, ErrorMessages.INVALID_ZIP.message
             ) from e
         except OSError as e:
             # Например, файл был удален между сохранением и проверкой
             logger.error(f"Ошибка доступа к файлу при валидации: {e}")
             raise ZipExtractionError(
-                file_path, ErrorMessages.ERR_MSG_VALIDATION_FAILED
+                file_path, ErrorMessages.VALIDATION_FAILED.message
             ) from e
 
     def _build_file_info(

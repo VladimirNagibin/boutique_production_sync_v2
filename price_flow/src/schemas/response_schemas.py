@@ -16,6 +16,13 @@ class BaseResponse(BaseModel):
         default_factory=lambda: datetime.now(UTC),
         description="Время ответа сервера в формате ISO 8601",
     )
+    execution_time: float | None = Field(
+        default=None, description="Время выполнения запроса в миллисекундах"
+    )
+    request_id: str | None = Field(
+        default=None,
+        description="Уникальный идентификатор запроса для трассировки",
+    )
 
 
 class SuccessResponse(BaseResponse):
@@ -44,6 +51,13 @@ class ErrorResponse(BaseResponse):
     )
     error_code: str = Field(
         ...,
-        description=("Код ошибки для программной обработки (например, 'NOT_FOUND')"),
+        description=(
+            "Код ошибки для программной обработки (например, 'NOT_FOUND')"
+        ),
     )
-    message: str = Field(..., description="Описание ошибки, понятное пользователю")
+    message: str = Field(
+        ..., description="Описание ошибки, понятное пользователю"
+    )
+    data: Any | None = Field(
+        default=None, description="Дополнительные данные об ошибке"
+    )

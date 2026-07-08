@@ -17,7 +17,7 @@ from interfaces.db.base import IDatabaseManager, ITransactionManager
 from .sql_scripts import sql_script_create_table
 
 
-class SQLiteTransactionManager(ITransactionManager):
+class SQLiteTransactionManager(ITransactionManager):  # type: ignore[misc]
     """Async SQLite transaction manager."""
 
     def __init__(self, connection: aiosqlite.Connection):
@@ -46,12 +46,14 @@ class SQLiteTransactionManager(ITransactionManager):
             raise
 
 
-class SQLiteManager(IDatabaseManager):
+class SQLiteManager(IDatabaseManager):  # type: ignore[misc]
     """Async SQLite database manager."""
 
-    def __init__(self, db_path: str = str(settings.DB_SQLITE_PATH), **kwargs: Any):
+    def __init__(
+        self, db_path: str = str(settings.sqlite.sqlite_file), **kwargs: Any
+    ) -> None:
         self.db_path = db_path
-        self.pool_size = kwargs.get("pool_size", settings.POOL_SIZE)
+        self.pool_size = kwargs.get("pool_size", settings.sqlite.pool_size)
         self._connection_pool = None
 
     async def initialize(self) -> None:
@@ -174,20 +176,25 @@ class SQLiteManager(IDatabaseManager):
         self,
         table_name: str | None = None,
         column_def: str | None = None,
-    ):
+    ) -> None:
         """
         Добавляет колонку к существующей таблице
 
         Args:
             table_name: имя таблицы
-            column_def: определение колонки (например: "new_column TEXT DEFAULT ''")
+            column_def: определение колонки
+            (например: "new_column TEXT DEFAULT ''")
         """
         table_name = table_name or "supplier_clothing_codes"
         column_def = column_def or "supplier_code"
 
         # sql = f"ALTER TABLE {table_name} DROP COLUMN {column_def}"
-        sql = f"ALTER TABLE {table_name} ADD COLUMN description TEXT DEFAULT ''"
+        sql = (
+            f"ALTER TABLE {table_name} ADD COLUMN description TEXT DEFAULT ''"
+        )
         async with self.get_connection() as conn:
             await conn.execute(sql)
             await conn.commit()
-            logger.info(f"SQLite add column: {column_def} to table: {table_name}")
+            logger.info(
+                f"SQLite add column: {column_def} to table: {table_name}"
+            )

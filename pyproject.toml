@@ -1,0 +1,44 @@
+[tool.mypy]
+# Строгая типизация
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_any_generics = false
+
+# Разрешаем пропускать импорты без типов (только для внешних библиотек)
+ignore_missing_imports = false
+
+# Явные базовые пути — ключевая настройка для монорепозитория
+explicit_package_bases = true
+mypy_path = "price_flow/src:converter/src"
+namespace_packages = true
+
+# Пути к исходникам для проверки
+files = ["price_flow/src", "converter/src"]
+
+# Исключаем миграции Alembic и сгенерированный код
+exclude = [
+    "^price_flow/src/migrations/.*",
+    "^converter/src/migrations/.*",
+    "^.*alembic/.*",
+]
+
+# Плагин pydantic — ОБЯЗАТЕЛЕН для корректной работы с Settings
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+warn_untyped_fields = true
+
+# Точечные исключения для библиотек без типов
+[[tool.mypy.overrides]]
+module = [
+    "pandas.*",
+    "openpyxl.*",
+    "sqladmin.*",
+    "python_json_logger.*",
+]
+ignore_missing_imports = true

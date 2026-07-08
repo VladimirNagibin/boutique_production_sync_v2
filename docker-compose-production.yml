@@ -1,0 +1,9 @@
+services:
+  app-prod:
+    build:
+      context: ./price_flow
+      target: production
+    ports:
+      - "8000:8000"
+    environment:
+      - ENV=production

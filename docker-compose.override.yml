@@ -1,0 +1,47 @@
+services:
+  price_flow:
+    volumes:
+      - ./price_flow/src:/app/src
+      # - ./price_flow/config:/app/src/config
+    env_file:
+      - ./.env.price_flow
+    ports:
+     - 8000:8000
+
+  converter:
+    volumes:
+      - ./converter/src:/opt/app
+    env_file:
+      - ./.env.converter
+    ports:
+     - 8090:8000
+
+  price_flow-migrations:
+    volumes:
+      - ./price_flow/src:/app/src
+    env_file:
+      - ./.env.price_flow
+    working_dir: /app/src
+
+  db:
+    ports:
+     - 5442:5432
+    env_file:
+      - ./.env.price_flow
+
+  redis:
+    ports:
+      - 6379:6379
+
+  seq:
+    volumes:
+      - seq-data:/data
+    env_file:
+      - ./.env.price_flow
+    ports:
+      - "5341:80"
+
+volumes:
+  seq-data:
+  db_data:
+  redis-data:

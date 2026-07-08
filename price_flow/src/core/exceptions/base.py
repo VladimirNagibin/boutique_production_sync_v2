@@ -4,8 +4,6 @@ from typing import TYPE_CHECKING, Any
 
 
 # from core.logger import logger
-
-
 if TYPE_CHECKING:
     from .enums import ErrorCode
 
@@ -48,7 +46,7 @@ class BaseAppException(Exception):
         self.error_code = str(error_code)
         self.message = message or self.__class__.__name__
         self.details = details
-        status_code = status_code
+        self.status_code = status_code
         super().__init__(self.message)
 
         # ----- Логирование создания исключения -----

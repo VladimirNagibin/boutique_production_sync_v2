@@ -1,5 +1,4 @@
 import sqlite3
-import time
 
 from pathlib import Path
 from typing import Any
@@ -8,7 +7,8 @@ import pandas as pd
 
 from pandas import DataFrame
 
-from core.exceptions import DatabaseLoadError, FileAppNotFoundError
+from core.exceptions.database import DatabaseLoadError
+from core.exceptions.file import FileAppNotFoundError
 from core.logger import logger
 from core.settings import settings
 from db.factory import AsyncDatabaseFactory
@@ -17,7 +17,9 @@ from schemas.supplier_schemas import SupplierProduct, SupplierProductPrice
 
 
 class SupplierClothingRepo:
-    def __init__(self, db_path: str = str(settings.DB_SQLITE_PATH)) -> None:  # type: ignore
+    def __init__(
+        self, db_path: str = str(settings.sqlite.sqlite_file)
+    ) -> None:
         self.db_path = db_path
         self._db_manager: IDatabaseManager | None = None
 
@@ -27,7 +29,7 @@ class SupplierClothingRepo:
             self._db_manager = await AsyncDatabaseFactory.get_manager()
         return self._db_manager
 
-    async def transfer_with_column_rename(self):
+    async def transfer_with_column_rename(self) -> None:
         """
         Переносит данные с переименованием колонок
 
@@ -43,22 +45,22 @@ class SupplierClothingRepo:
         }
         """
         SOURCE_DB_FILE = "db.sqlite3"
-        source_db = Path(settings.BASE_DIR) / f"data/{SOURCE_DB_FILE}"
-        target_db = settings.DB_SQLITE_PATH
+        source_db = Path(settings.app.base_dir) / f"data/{SOURCE_DB_FILE}"
+        target_db = settings.sqlite.sqlite_file
         table_mapping: dict[str, Any] = {
-            'products_codesupplierfile': {
-                'target_table': 'supplier_clothing_codes',
-                'column_mapping': {
-                    'id': 'id',
-                    'code': 'code',
-                    'name': 'name',
-                    'brand': 'category',
-                    'subgroup': 'subcategory',
-                    'supplier': 'supplier_id',
-                    'product_summary': 'product_summary',
-                    'size': 'size',
-                    'color': 'color',
-                }
+            "products_codesupplierfile": {
+                "target_table": "supplier_clothing_codes",
+                "column_mapping": {
+                    "id": "id",
+                    "code": "code",
+                    "name": "name",
+                    "brand": "category",
+                    "subgroup": "subcategory",
+                    "supplier": "supplier_id",
+                    "product_summary": "product_summary",
+                    "size": "size",
+                    "color": "color",
+                },
             }
         }
 
@@ -66,24 +68,26 @@ class SupplierClothingRepo:
         target_conn = sqlite3.connect(target_db)
 
         for source_table, config in table_mapping.items():
-            target_table = config.get('target_table', source_table)
-            column_mapping = config['column_mapping']
+            target_table = config.get("target_table", source_table)
+            column_mapping = config["column_mapping"]
 
             # Создаем список исходных колонок
-            source_cols = ', '.join(column_mapping.keys())
+            source_cols = ", ".join(column_mapping.keys())
 
             # Создаем список целевых колонок
             # target_cols = ', '.join(column_mapping.values())
 
             # Читаем данные
-            query = f"SELECT {source_cols} FROM {source_table}"
+            query = f"SELECT {source_cols} FROM {source_table}"  # noqa: S608
             df = pd.read_sql_query(query, source_conn)
 
             # Переименовываем колонки
             df.columns = list(column_mapping.values())
 
             # Записываем в целевую базу
-            df.to_sql(target_table, target_conn, if_exists='replace', index=False)
+            df.to_sql(
+                target_table, target_conn, if_exists="replace", index=False
+            )
 
         source_conn.close()
         target_conn.close()
@@ -106,15 +110,22 @@ class SupplierClothingRepo:
 
             result = await db_manager.execute_query(query, (supplier_id,))
             if result and result[0]:
-                max_code = result[0]["MAX(code)"] if result[0]["MAX(code)"] is not None else 0
-                print(f"Максимальный код для поставщика {supplier_id}: {max_code}")
+                max_code = (
+                    result[0]["MAX(code)"]
+                    if result[0]["MAX(code)"] is not None
+                    else 0
+                )
+                print(
+                    f"Максимальный код для поставщика {supplier_id}: "
+                    f"{max_code}"
+                )
 
                 return max_code
             else:
                 print(f"Для поставщика {supplier_id} нет записей")
                 return 0
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"Ошибка: {e}")
             return 0
 
@@ -133,7 +144,7 @@ class SupplierClothingRepo:
             result = await db_manager.execute_query(query, (supplier_id,))
             print(result)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"Ошибка: {e}")
 
     async def get_supplier_product(
@@ -148,7 +159,7 @@ class SupplierClothingRepo:
         """
         try:
             db_manager = await self._get_db_manager()
-            search_name = f'{product_summary} {size} {color}'.strip()
+            search_name = f"{product_summary} {size} {color}".strip()
             query = """
             SELECT code, category, subcategory
             FROM supplier_clothing_codes
@@ -167,7 +178,7 @@ class SupplierClothingRepo:
                 # print("")
                 return None
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"Ошибка: {e}")
         return None
 
@@ -199,7 +210,7 @@ class SupplierClothingRepo:
                 # print("")
                 return None
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"Ошибка: {e}")
         return None
 
@@ -207,7 +218,7 @@ class SupplierClothingRepo:
         self,
         supplier_prices: list[SupplierProductPrice],
         batch_size: int = 100,
-        replace_duplicates: bool = True
+        replace_duplicates: bool = True,
     ) -> dict[str, Any]:
         """
         Загружает прайс в таблицу supplier_price
@@ -215,7 +226,8 @@ class SupplierClothingRepo:
         Args:
             supplier_prices: список объектов SupplierProductPrice
             batch_size: размер пакета для вставки (оптимизация)
-            replace_duplicates: заменить дубликаты (True) или пропустить (False)
+            replace_duplicates: заменить дубликаты (True) или пропустить
+            (False)
 
         Returns:
             Словарь с результатами операции
@@ -227,7 +239,10 @@ class SupplierClothingRepo:
         try:
             db_manager = await self._get_db_manager()
 
-            print(f"Начало загрузки {len(supplier_prices)} записей в supplier_price")
+            print(
+                f"Начало загрузки {len(supplier_prices)} записей в "
+                "supplier_price"
+            )
 
             # Статистика
             stats: dict[str, Any] = {
@@ -237,29 +252,32 @@ class SupplierClothingRepo:
                 "skipped": 0,
                 "errors": 0,
                 "supplier_ids": set(),
-                "batches": 0
+                "batches": 0,
             }
 
             # Разбиваем на пакеты для оптимизации
             for i in range(0, len(supplier_prices), batch_size):
-                batch = supplier_prices[i:i + batch_size]
+                batch = supplier_prices[i : i + batch_size]
                 stats["batches"] += 1
 
                 try:
                     if replace_duplicates:
                         # Вставка с заменой дубликатов
-                        batch_result = await self._insert_batch_replace(
+                        await self._insert_batch_replace(
                             db_manager, batch, stats
                         )
                     else:
                         # Вставка с игнорированием дубликатов
-                        batch_result = await self._insert_batch_ignore(
+                        await self._insert_batch_ignore(
                             db_manager, batch, stats
                         )
 
-                    print(f"Пакет {stats['batches']}: обработано {len(batch)} записей")
+                    print(
+                        f"Пакет {stats['batches']}: обработано {len(batch)} "
+                        "записей"
+                    )
 
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     print(f"Ошибка в пакете {stats['batches']}: {e}")
                     stats["errors"] += len(batch)
 
@@ -274,9 +292,7 @@ class SupplierClothingRepo:
             print(f"   Ошибок: {stats['errors']}")
             print(f"   Поставщики: {stats['supplier_ids']}")
 
-            return stats
-
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"Критическая ошибка загрузки: {e}")
             return {
                 "status": "error",
@@ -284,14 +300,16 @@ class SupplierClothingRepo:
                 "inserted": 0,
                 "updated": 0,
                 "skipped": 0,
-                "errors": len(supplier_prices)
+                "errors": len(supplier_prices),
             }
+        else:
+            return stats
 
     async def _insert_batch_replace(
         self,
         db_manager: IDatabaseManager,
         batch: list[SupplierProductPrice],
-        stats: dict[str, Any]
+        stats: dict[str, Any],
     ) -> None:
         """
         Вставляет пакет данных с заменой дубликатов
@@ -311,17 +329,19 @@ class SupplierClothingRepo:
         # Подготавливаем данные
         values: list[Any] = []
         for item in batch:
-            values.append((
-                item.code,
-                item.name.strip(),  # Очищаем пробелы
-                item.category.strip() if item.category else None,
-                item.subcategory.strip() if item.subcategory else None,
-                item.supplier_id,
-                item.product_summary.strip(),
-                item.size.strip() if item.size else None,
-                item.color.strip() if item.color else None,
-                round(item.price, 2)  # Округляем до 2 знаков
-            ))
+            values.append(
+                (
+                    item.code,
+                    item.name.strip(),  # Очищаем пробелы
+                    item.category.strip() if item.category else None,
+                    item.subcategory.strip() if item.subcategory else None,
+                    item.supplier_id,
+                    item.product_summary.strip(),
+                    item.size.strip() if item.size else None,
+                    item.color.strip() if item.color else None,
+                    round(item.price, 2),  # Округляем до 2 знаков
+                )
+            )
 
             # Собираем статистику
             stats["supplier_ids"].add(item.supplier_id)
@@ -337,8 +357,7 @@ class SupplierClothingRepo:
                 WHERE supplier_id = ? AND code = ?
                 """
                 existing = await db_manager.execute_query(
-                    check_sql,
-                    (item.supplier_id, item.code)
+                    check_sql, (item.supplier_id, item.code)
                 )
 
                 if existing:
@@ -349,13 +368,15 @@ class SupplierClothingRepo:
         except sqlite3.IntegrityError as e:
             # Если ошибка целостности, пробуем вставить по одной
             print(f"Ошибка целостности пакета, вставляем по одной: {e}")
-            await self._insert_one_by_one(db_manager, batch, stats, insert_sql)
+            await self._insert_one_by_one(
+                db_manager, batch, stats, insert_sql
+            )
 
     async def _insert_batch_ignore(
         self,
         db_manager: IDatabaseManager,
         batch: list[SupplierProductPrice],
-        stats: dict[str, Any]
+        stats: dict[str, Any],
     ) -> None:
         """
         Вставляет пакет данных, игнорируя дубликаты
@@ -374,17 +395,19 @@ class SupplierClothingRepo:
         # Подготавливаем данные
         values: list[Any] = []
         for item in batch:
-            values.append((
-                item.code,
-                item.name.strip(),
-                item.category.strip() if item.category else None,
-                item.subcategory.strip() if item.subcategory else None,
-                item.supplier_id,
-                item.product_summary.strip(),
-                item.size.strip() if item.size else None,
-                item.color.strip() if item.color else None,
-                round(item.price, 2)
-            ))
+            values.append(
+                (
+                    item.code,
+                    item.name.strip(),
+                    item.category.strip() if item.category else None,
+                    item.subcategory.strip() if item.subcategory else None,
+                    item.supplier_id,
+                    item.product_summary.strip(),
+                    item.size.strip() if item.size else None,
+                    item.color.strip() if item.color else None,
+                    round(item.price, 2),
+                )
+            )
 
             stats["supplier_ids"].add(item.supplier_id)
 
@@ -393,20 +416,24 @@ class SupplierClothingRepo:
             result = await db_manager.execute_query(insert_sql, values)
 
             # Считаем вставленные записи
-            inserted_count = result.rowcount if hasattr(result, 'rowcount') else len(batch)
+            inserted_count = (
+                result.rowcount if hasattr(result, "rowcount") else len(batch)
+            )
             stats["inserted"] += inserted_count
-            stats["skipped"] += (len(batch) - inserted_count)
+            stats["skipped"] += len(batch) - inserted_count
 
         except sqlite3.IntegrityError as e:
             print(f"Ошибка целостности, вставляем по одной: {e}")
-            await self._insert_one_by_one(db_manager, batch, stats, insert_sql)
+            await self._insert_one_by_one(
+                db_manager, batch, stats, insert_sql
+            )
 
     async def _insert_one_by_one(
         self,
         db_manager: IDatabaseManager,
         batch: list[SupplierProductPrice],
         stats: dict[str, Any],
-        insert_sql: str
+        insert_sql: str,
     ) -> None:
         """
         Вставляет записи по одной (fallback при ошибках пакетной вставки)
@@ -423,7 +450,7 @@ class SupplierClothingRepo:
                     item.product_summary.strip(),
                     item.size.strip() if item.size else None,
                     item.color.strip() if item.color else None,
-                    round(item.price, 2)
+                    round(item.price, 2),
                 )
 
                 await db_manager.execute_query(insert_sql, values)
@@ -434,8 +461,7 @@ class SupplierClothingRepo:
                 WHERE supplier_id = ? AND code = ?
                 """
                 existing = await db_manager.execute_query(
-                    check_sql,
-                    (item.supplier_id, item.code)
+                    check_sql, (item.supplier_id, item.code)
                 )
 
                 if existing:
@@ -447,27 +473,32 @@ class SupplierClothingRepo:
                 print(f"Ошибка вставки записи: {e}")
                 stats["errors"] += 1
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(f"Неожиданная ошибка: {e}")
                 stats["errors"] += 1
 
-    def save_price_as_is(self, excel_file_path: str | Path | None = None) -> DataFrame:
-        connection = sqlite3.connect(settings.DB_SQLITE_PATH)
-        data_frame = pd.read_sql('SELECT * FROM supplier_price', connection)
+    def save_price_as_is(
+        self,  # excel_file_path: str | Path | None = None
+    ) -> DataFrame:
+        connection = sqlite3.connect(settings.sqlite.sqlite_file)
+        data_frame = pd.read_sql("SELECT * FROM supplier_price", connection)
         # data_frame.to_excel(excel_file_path, index=False)
         return data_frame
 
     def save_price_for_load(self) -> DataFrame:
-        connection = sqlite3.connect(settings.DB_SQLITE_PATH)
+        connection = sqlite3.connect(settings.sqlite.sqlite_file)
         data_frame = pd.read_sql(
-            'SELECT * FROM supplier_price ORDER BY category, subcategory, name',
-            connection
+            (
+                "SELECT * FROM supplier_price ORDER BY "
+                "category, subcategory, name"
+            ),
+            connection,
         )
         return data_frame
 
     async def load_data(
         self, file_path: str | Path, table_name: str = "supplier_price"
-    ) -> dict[str, Any]:
+    ) -> None:
         """
         Обновляет данные из XLSX файла в таблицу базы данных.
 
@@ -514,14 +545,16 @@ class SupplierClothingRepo:
             # result = await asyncio.to_thread(
             #     self._sync_load_operation, xlsx_path, table_name
             # )
-            result = await  self._sync_load_operation(xlsx_path, table_name)
+            await self._sync_load_operation(xlsx_path, table_name)
             logger.info(
                 "Данные успешно загружены",
                 extra={
                     "file_path": str(xlsx_path),
                     "table_name": table_name,
                     # "rows_loaded": result["rows_loaded"],
-                    # "processing_time_ms": result.get("processing_time_ms", 0),
+                    # "processing_time_ms": (
+                    #     result.get("processing_time_ms", 0)
+                    # ),
                     # "columns_loaded": result.get("columns_loaded", []),
                 },
             )
@@ -540,11 +573,10 @@ class SupplierClothingRepo:
             error_msg = f"Неожиданная ошибка при загрузке {xlsx_path}: {e}"
             logger.error(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
-        else:
-            return result
 
-
-    async def _sync_load_operation(self, xlsx_path: Path, table_name: str) -> dict[str, Any]:
+    async def _sync_load_operation(
+        self, xlsx_path: Path, table_name: str
+    ) -> None:
         """
         Синхронная операция загрузки данных.
 
@@ -555,7 +587,7 @@ class SupplierClothingRepo:
         Returns:
             Dict с результатами загрузки
         """
-        start_time = time.time()
+        # start_time = time.time()
 
         logger.debug(
             "Начало синхронной загрузки данных",
@@ -564,7 +596,7 @@ class SupplierClothingRepo:
 
         df = self._load_excel_data(xlsx_path)
 
-        result = await self._update_categories(df)
+        await self._update_categories(df)
 
         # with closing(sqlite3.connect(str(self.db_path))) as conn:
         #     # Настраиваем соединение для лучшей производительности
@@ -572,48 +604,46 @@ class SupplierClothingRepo:
         #     conn.execute("PRAGMA synchronous=NORMAL")
         #     conn.execute("PRAGMA cache_size=-2000")
 
-            # Получаем информацию о таблице до загрузки
-            # table_info_before = self._get_table_info(conn, table_name)
+        # Получаем информацию о таблице до загрузки
+        # table_info_before = self._get_table_info(conn, table_name)
 
-            # # Читаем CSV файл
-            # df = self._read_csv_file(xlsx_path)
+        # # Читаем CSV файл
+        # df = self._read_csv_file(xlsx_path)
 
-            # # Загружаем данные в базу
-            # rows_loaded = self._load_dataframe_to_db(df, conn, table_name)
+        # # Загружаем данные в базу
+        # rows_loaded = self._load_dataframe_to_db(df, conn, table_name)
 
-            # # Получаем информацию о таблице после загрузки
-            # table_info_after = self._get_table_info(conn, table_name)
+        # # Получаем информацию о таблице после загрузки
+        # table_info_after = self._get_table_info(conn, table_name)
 
-            # processing_time_ms = int((time.time() - start_time) * 1000)
+        # processing_time_ms = int((time.time() - start_time) * 1000)
 
-            # result: dict[str, Any] = {
-            #     "status": "success",
-            #     "rows_loaded": rows_loaded,
-            #     "table_name": table_name,
-            #     "processing_time_ms": processing_time_ms,
-            #     "file_path": str(csv_path),
-            #     "file_size_bytes": csv_path.stat().st_size,
-            #     "dataframe_shape": df.shape,
-            #     "dataframe_columns": list(df.columns),
-            #     "table_info_before": table_info_before,
-            #     "table_info_after": table_info_after,
-            #     "rows_per_second": (
-            #         rows_loaded / (processing_time_ms / 1000)
-            #         if processing_time_ms > 0
-            #         else 0
-            #     ),
-            # }
+        # result: dict[str, Any] = {
+        #     "status": "success",
+        #     "rows_loaded": rows_loaded,
+        #     "table_name": table_name,
+        #     "processing_time_ms": processing_time_ms,
+        #     "file_path": str(csv_path),
+        #     "file_size_bytes": csv_path.stat().st_size,
+        #     "dataframe_shape": df.shape,
+        #     "dataframe_columns": list(df.columns),
+        #     "table_info_before": table_info_before,
+        #     "table_info_after": table_info_after,
+        #     "rows_per_second": (
+        #         rows_loaded / (processing_time_ms / 1000)
+        #         if processing_time_ms > 0
+        #         else 0
+        #     ),
+        # }
 
-            # logger.debug(
-            #     "Синхронная загрузка завершена",
-            #     extra={
-            #         "rows_loaded": rows_loaded,
-            #         "processing_time_ms": processing_time_ms,
-            #         "dataframe_shape": df.shape,
-            #     },
-            # )
-
-        return result
+        # logger.debug(
+        #     "Синхронная загрузка завершена",
+        #     extra={
+        #         "rows_loaded": rows_loaded,
+        #         "processing_time_ms": processing_time_ms,
+        #         "dataframe_shape": df.shape,
+        #     },
+        # )
 
     def _load_excel_data(self, excel_path: str | Path) -> pd.DataFrame:
         """
@@ -630,17 +660,17 @@ class SupplierClothingRepo:
             df = pd.read_excel(
                 excel_path,
                 dtype={
-                    'id': 'int64',
-                    'code': 'int64',
-                    'name': 'str',
-                    'category': 'str',
-                    'subcategory': 'str',
-                    'supplier_id': 'int64',
-                    'product_summary': 'str',
-                    'size': 'str',
-                    'color': 'str',
-                    'price': 'float64'
-                }
+                    "id": "int64",
+                    "code": "int64",
+                    "name": "str",
+                    "category": "str",
+                    "subcategory": "str",
+                    "supplier_id": "int64",
+                    "product_summary": "str",
+                    "size": "str",
+                    "color": "str",
+                    "price": "float64",
+                },
             )
 
             logger.info(f"Загружен Excel файл: {excel_path}")
@@ -648,14 +678,29 @@ class SupplierClothingRepo:
             logger.info(f"Колонки: {', '.join(df.columns)}")
 
             # Проверяем необходимые колонки
-            required_columns = ['code', 'category', 'subcategory', 'supplier_id']
-            missing_columns = [col for col in required_columns if col not in df.columns]
+            required_columns = [
+                "code",
+                "category",
+                "subcategory",
+                "supplier_id",
+            ]
+            missing_columns = [
+                col for col in required_columns if col not in df.columns
+            ]
 
             if missing_columns:
-                raise ValueError(f"Отсутствуют обязательные колонки: {missing_columns}")
+                msg = f"Отсутствуют обязательные колонки: {missing_columns}"
+                raise ValueError(msg)  # noqa: TRY301
 
             # Очищаем строковые данные
-            string_columns = ['category', 'subcategory', 'name', 'product_summary', 'size', 'color']
+            string_columns = [
+                "category",
+                "subcategory",
+                "name",
+                "product_summary",
+                "size",
+                "color",
+            ]
             for col in string_columns:
                 if col in df.columns:
                     df[col] = df[col].astype(str).str.strip()
@@ -663,10 +708,12 @@ class SupplierClothingRepo:
             # Заменяем NaN на None
             df = df.where(pd.notnull(df), None)
 
-            df['code'] = pd.to_numeric(df['code'], errors='coerce').astype('Int64')
-            df['supplier_id'] = pd.to_numeric(df['supplier_id'], errors='coerce').astype('Int64')
-
-            return df
+            df["code"] = pd.to_numeric(df["code"], errors="coerce").astype(
+                "Int64"
+            )
+            df["supplier_id"] = pd.to_numeric(
+                df["supplier_id"], errors="coerce"
+            ).astype("Int64")
 
         except FileNotFoundError:
             logger.error(f"Файл не найден: {excel_path}")
@@ -674,8 +721,13 @@ class SupplierClothingRepo:
         except Exception as e:
             logger.error(f"Ошибка загрузки Excel файла: {e}")
             raise
+        else:
+            return df
 
-    async def _update_categories(self, df: pd.DataFrame, batch_size: int = 1000) -> tuple[int, int]:
+    async def _update_categories(
+        self,
+        df: pd.DataFrame,  # batch_size: int = 1000
+    ) -> None:
         """
         Обновление категорий и подкатегорий в базе данных
 
@@ -690,7 +742,8 @@ class SupplierClothingRepo:
             db_manager = await self._get_db_manager()
 
             # SQL запрос на обновление
-            # Обновляем category и subcategory там, где совпали code и supplier_id
+            # Обновляем category и subcategory там,
+            # где совпали code и supplier_id
             query = """
             UPDATE supplier_price
             SET category = ?,
@@ -700,27 +753,32 @@ class SupplierClothingRepo:
             """
 
             # 4. Подготовка данных для массовой вставки (executemany)
-            # Формируем список кортежей: (category, subcategory, code, supplier_id)
+            # Формируем список кортежей:
+            # (category, subcategory, code, supplier_id)
             data_to_update: list[tuple[Any, ...]] = []
 
             for _, row in df.iterrows():
-                # Преобразуем в стандартные Python типы (int из numpy, str из object)
+                # Преобразуем в стандартные Python типы
+                # (int из numpy, str из object)
                 row_tuple = (
-                    str(row['category']) if pd.notna(row['category']) else None,
-                    str(row['subcategory']) if pd.notna(row['subcategory']) else None,
-                    int(row['code']),
-                    int(row['supplier_id'])
+                    str(row["category"])
+                    if pd.notna(row["category"])
+                    else None,
+                    str(row["subcategory"])
+                    if pd.notna(row["subcategory"])
+                    else None,
+                    int(row["code"]),
+                    int(row["supplier_id"]),
                 )
                 data_to_update.append(row_tuple)
             # print(data_to_update)
             # 5. Выполнение обновления
             result = await db_manager.execute_many(query, data_to_update)
-            # print(result)
+            print(result)
             await self.update_supplier_clothing()
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"Ошибка: {e}")
-
 
         #     updated_count = 0
         #     total_processed = 0
@@ -737,18 +795,26 @@ class SupplierClothingRepo:
         #     """)
 
         #     # Вставляем данные во временную таблицу
-        #     excel_data = df[['code', 'category', 'subcategory', 'supplier_id']].to_records(index=False)
+        #     excel_data = df[
+        #         ['code', 'category', 'subcategory', 'supplier_id']
+        #     ].to_records(index=False)
         #     cursor.executemany(
-        #         "INSERT OR REPLACE INTO temp_excel_data (code, category, subcategory, supplier_id) VALUES (?, ?, ?, ?)",
+        #         (
+        #             "INSERT OR REPLACE INTO temp_excel_data "
+        #             "(code, category, subcategory, supplier_id) "
+        #             "VALUES (?, ?, ?, ?)"
+        #         ),
         #         excel_data
         #     )
 
-        #     logger.info(f"Загружено во временную таблицу: {len(df)} записей")
+        #     logger.info(f"Загружено во временную таблицу:{len(df)} записей")
 
         #     # 4. ПРОВЕРКА ДАННЫХ ВО ВРЕМЕННОЙ ТАБЛИЦЕ
         #     cursor.execute("SELECT COUNT(*) FROM temp_excel_data")
         #     temp_count = cursor.fetchone()[0]
-        #     logger.info(f"Фактически во временной таблице: {temp_count} записей")
+        #     logger.info(
+        #         f"Фактически во временной таблице: {temp_count} записей"
+        #     )
 
         #     # 5. ПРОВЕРКА СУЩЕСТВУЮЩИХ ДАННЫХ В БАЗЕ
         #     cursor.execute("SELECT COUNT(*) FROM supplier_price")
@@ -771,8 +837,9 @@ class SupplierClothingRepo:
         #     # 7. ВЫВОД ПРИМЕРОВ СОВПАДЕНИЙ (если есть)
         #     if matches_count > 0:
         #         cursor.execute("""
-        #             SELECT sp.code, sp.supplier_id, sp.category, sp.subcategory,
-        #                 ted.category as new_category, ted.subcategory as new_subcategory
+        #             SELECT sp.code, sp.supplier_id, sp.category,
+        #                 sp.subcategory, ted.category as new_category,
+        #                 ted.subcategory as new_subcategory
         #             FROM supplier_price sp
         #             JOIN temp_excel_data ted ON ted.code = sp.code
         #                 AND ted.supplier_id = sp.supplier_id
@@ -781,26 +848,31 @@ class SupplierClothingRepo:
         #         examples = cursor.fetchall()
         #         logger.info("Примеры совпадений (первые 5):")
         #         for ex in examples:
-        #             logger.info(f"  code={ex[0]}, supplier={ex[1]}, "
-        #                     f"старая категория='{ex[2]}', новая='{ex[3]}', "
-        #                     f"старая подкатегория='{ex[4]}', новая='{ex[5]}'")
+        #             logger.info(
+        #                 f"  code={ex[0]}, supplier={ex[1]}, "
+        #                 f"старая категория='{ex[2]}', новая='{ex[3]}', "
+        #                 f"старая подкатегория='{ex[4]}', новая='{ex[5]}'"
+        #             )
 
         #     # Обновляем основную таблицу данными из временной
         #     cursor.execute("""
         #         UPDATE supplier_price
         #         SET
-        #             category = COALESCE((SELECT category FROM temp_excel_data
-        #                             WHERE temp_excel_data.code = supplier_price.code
-        #                             AND temp_excel_data.supplier_id = supplier_price.supplier_id),
-        #                             supplier_price.category),
-        #             subcategory = COALESCE((SELECT subcategory FROM temp_excel_data
-        #                                 WHERE temp_excel_data.code = supplier_price.code
-        #                                 AND temp_excel_data.supplier_id = supplier_price.supplier_id),
-        #                                 supplier_price.subcategory)
+        #             category = COALESCE(
+        #                 (SELECT category FROM temp_excel_data
+        #                  WHERE temp_excel_data.code = supplier_price.code
+        #       AND temp_excel_data.supplier_id = supplier_price.supplier_id),
+        #                 supplier_price.category
+        #             ),
+        #             subcategory = COALESCE(
+        #                 (SELECT subcategory FROM temp_excel_data
+        #                  WHERE temp_excel_data.code = supplier_price.code
+        #       AND temp_excel_data.supplier_id = supplier_price.supplier_id),
+        #                  supplier_price.subcategory)
         #         WHERE EXISTS (
         #             SELECT 1 FROM temp_excel_data
         #             WHERE temp_excel_data.code = supplier_price.code
-        #             AND temp_excel_data.supplier_id = supplier_price.supplier_id
+        #       AND temp_excel_data.supplier_id = supplier_price.supplier_id
         #         )
         #     """)
 
@@ -816,19 +888,22 @@ class SupplierClothingRepo:
 
         #     return updated_count, len(df)
 
-    async def update_supplier_clothing(self):
+    async def update_supplier_clothing(self) -> None:
         """
-        Обновляет или добавляет записи в supplier_clothing_codes из supplier_price.
-        Совпадение происходит по связке code + supplier_id.
+        Обновляет или добавляет записи в supplier_clothing_codes из
+        supplier_price. Совпадение происходит по связке code + supplier_id.
         """
 
         try:
             db_manager = await self._get_db_manager()
 
             # SQL запрос для вставки или обновления
-            # Мы берем только те поля, которые есть в source таблице (supplier_price).
-            # Поля supplier_code и description в целевой таблице НЕ обновляются данными из источника,
-            # так как их там нет. Они останутся NULL (для новых) или сохранят старые значения (при обновлении).
+            # Мы берем только те поля, которые есть в source таблице
+            # (supplier_price).
+            # Поля supplier_code и description в целевой таблице
+            # НЕ обновляются данными из источника,
+            # так как их там нет. Они останутся NULL (для новых) или сохранят
+            # старые значения (при обновлении).
             # query = """
             # INSERT INTO supplier_clothing_codes (
             #     code, name, category, subcategory, supplier_id,
@@ -859,71 +934,71 @@ class SupplierClothingRepo:
             result = await db_manager.execute_query_(query)
             print(result)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"Ошибка: {e}")
 
-    async def update_supplier_clothing_(self):
+    async def update_supplier_clothing_(self) -> dict[str, Any]:
         try:
             db_manager = await self._get_db_manager()
 
             # Разделяем запрос на отдельные операции
-            queries = [
-                # 1. Обновляем существующие записи
-                """
-                UPDATE supplier_clothing_codes
-                SET name = (SELECT name FROM supplier_price
-                        WHERE supplier_price.code = supplier_clothing_codes.code
-                        AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id),
-                    category = (SELECT category FROM supplier_price
-                            WHERE supplier_price.code = supplier_clothing_codes.code
-                            AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id),
-                    subcategory = (SELECT subcategory FROM supplier_price
-                                WHERE supplier_price.code = supplier_clothing_codes.code
-                                AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id),
-                    product_summary = (SELECT product_summary FROM supplier_price
-                                    WHERE supplier_price.code = supplier_clothing_codes.code
-                                    AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id),
-                    size = (SELECT size FROM supplier_price
-                        WHERE supplier_price.code = supplier_clothing_codes.code
-                        AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id),
-                    color = (SELECT color FROM supplier_price
-                            WHERE supplier_price.code = supplier_clothing_codes.code
-                            AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id)
-                WHERE EXISTS (
-                    SELECT 1 FROM supplier_price
-                    WHERE supplier_price.code = supplier_clothing_codes.code
-                    AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id
-                )
-                """,
-
-                # 2. Добавляем новые записи
-                """
-                INSERT INTO supplier_clothing_codes (
-                    code, name, category, subcategory, supplier_id,
-                    product_summary, size, color
-                )
-                SELECT code, name, category, subcategory, supplier_id,
-                    product_summary, size, color
-                FROM supplier_price
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM supplier_clothing_codes
-                    WHERE supplier_clothing_codes.code = supplier_price.code
-                    AND supplier_clothing_codes.supplier_id = supplier_price.supplier_id
-                )
-                """
-            ]
-
-            for query in queries:
+            for query in self._get_queries_update_supplier_clothing():
                 result = await db_manager.execute_query(query)
                 print(f"{result}===================")
-
-            return {"success": True, "message": "Обновление завершено"}
-
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"Ошибка: {e}")
             return {"success": False, "error": str(e)}
+        else:
+            return {"success": True, "message": "Обновление завершено"}
 
-    async def fix_supplier_id_type(self):
+    def _get_queries_update_supplier_clothing(self) -> list[str]:
+        queries = [
+            # 1. Обновляем существующие записи
+            """
+            UPDATE supplier_clothing_codes
+            SET name = (SELECT name FROM supplier_price
+                WHERE supplier_price.code = supplier_clothing_codes.code
+        AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id),
+                category = (SELECT category FROM supplier_price
+                    WHERE supplier_price.code = supplier_clothing_codes.code
+        AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id),
+                subcategory = (SELECT subcategory FROM supplier_price
+                    WHERE supplier_price.code = supplier_clothing_codes.code
+        AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id),
+                product_summary = (SELECT product_summary FROM supplier_price
+                    WHERE supplier_price.code = supplier_clothing_codes.code
+        AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id),
+                size = (SELECT size FROM supplier_price
+                    WHERE supplier_price.code = supplier_clothing_codes.code
+        AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id),
+                color = (SELECT color FROM supplier_price
+                    WHERE supplier_price.code = supplier_clothing_codes.code
+        AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id)
+            WHERE EXISTS (
+                SELECT 1 FROM supplier_price
+                WHERE supplier_price.code = supplier_clothing_codes.code
+        AND supplier_price.supplier_id = supplier_clothing_codes.supplier_id
+            )
+            """,
+            # 2. Добавляем новые записи
+            """
+            INSERT INTO supplier_clothing_codes (
+                code, name, category, subcategory, supplier_id,
+                product_summary, size, color
+            )
+            SELECT code, name, category, subcategory, supplier_id,
+                product_summary, size, color
+            FROM supplier_price
+            WHERE NOT EXISTS (
+                SELECT 1 FROM supplier_clothing_codes
+                WHERE supplier_clothing_codes.code = supplier_price.code
+        AND supplier_clothing_codes.supplier_id = supplier_price.supplier_id
+            )
+            """,
+        ]
+        return queries
+
+    async def fix_supplier_id_type(self) -> dict[str, Any]:
         """Упрощенная версия миграции"""
         try:
             db_manager = await self._get_db_manager()
@@ -932,7 +1007,7 @@ class SupplierClothingRepo:
             tables = await db_manager.execute_query(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
-            print("Доступные таблицы:", [t['name'] for t in tables])
+            print("Доступные таблицы:", [t["name"] for t in tables])
 
             # 2. Выполняем миграцию в одной транзакции
             # await db_manager.execute_query("BEGIN TRANSACTION")
@@ -973,10 +1048,15 @@ class SupplierClothingRepo:
             # """)
             # return
             # Удаляем старую таблицу
-            await db_manager.execute_query("DROP TABLE supplier_clothing_codes")
+            await db_manager.execute_query(
+                "DROP TABLE supplier_clothing_codes"
+            )
 
             # Переименовываем новую таблицу
-            await db_manager.execute_query("ALTER TABLE supplier_clothing_codes_new RENAME TO supplier_clothing_codes")
+            await db_manager.execute_query(
+                "ALTER TABLE supplier_clothing_codes_new RENAME TO "
+                "supplier_clothing_codes"
+            )
 
             # Создаем индексы
             await db_manager.execute_query("""
@@ -990,19 +1070,20 @@ class SupplierClothingRepo:
             """)
 
             # Коммитим
-        #    await db_manager.execute_query("COMMIT")
+            #    await db_manager.execute_query("COMMIT")
 
             print("Миграция успешно завершена")
-            return {"success": True}
 
             # except Exception as inner_error:
             #     # Откатываем при любой ошибке внутри транзакции
             #     # await db_manager.execute_query("ROLLBACK")
             #     raise inner_error
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"Ошибка миграции: {e}")
             return {"success": False, "error": str(e)}
+        else:
+            return {"success": True}
 
 
 def get_supplier_codes_repo() -> SupplierClothingRepo:

@@ -4,12 +4,26 @@ repos:
     rev: v5.0.0
     hooks:
       - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1000]
       - id: end-of-file-fixer
-        exclude: \.(log|bin|png|jpg|pdf|log.*)$
+        exclude: \.(log|bin|png|jpg|pdf|svg|lock)$
       - id: trailing-whitespace
-        exclude: \.(log|bin|png|jpg|pdf|log.*)$
+        exclude: \.(log|bin|png|jpg|pdf|svg|lock)$
+      - id: debug-statements  # ловит забытые breakpoint() и pdb
+      - id: detect-private-key  # ловит приватные ключи в коде
 
-  # Ruff: заменяет Black, isort, Flake8, autoflake и ещё ~700 правил
+  # ===== Проверка секретов =====
+  # - repo: https://github.com/Yelp/detect-secrets
+  #   rev: v1.5.0
+  #   hooks:
+  #     - id: detect-secrets
+  #       args: [--baseline, .secrets.baseline]
+
+  # ===== Ruff: линтинг + форматирование =====
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.6          # актуальная на сегодня, но лучше проверять
     hooks:
@@ -19,14 +33,56 @@ repos:
       # Форматирование (аналог black)
       - id: ruff-format
 
-  # Mypy – оставляем для проверки типов
+  # ===== Mypy: проверка типов =====
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.15.0
     hooks:
       - id: mypy
-        args: [--strict, --ignore-missing-imports, --show-error-codes]
+        name: mypy-price_flow
+        # ВАЖНО: не передаём файлы по одному — mypy должен проверять проект целиком
+        pass_filenames: false
+        # Указываем корневой конфиг, где настроены пути и плагины
+        args:
+          - --config-file=price_flow/pyproject.toml
+          - price_flow/src
+        #  - --config-file=pyproject.toml
+        #  - --explicit-package-bases
+        files: ^price_flow/
         additional_dependencies:
+          # Типы для внешних библиотек
           - types-requests
+          - types-python-dateutil
           - types-aiofiles
-          - pydantic
-          - pydantic-settings
+          # Основные зависимости проекта
+          - pydantic>=2.6
+          - pydantic-settings>=2.6
+          - sqlalchemy>=2.0
+          - fastapi>=0.135
+          - redis>=7.0
+          - httpx
+          - aiofiles
+
+      - id: mypy
+        name: mypy-converter
+        # ВАЖНО: не передаём файлы по одному — mypy должен проверять проект целиком
+        pass_filenames: false
+        # Указываем корневой конфиг, где настроены пути и плагины
+        args:
+          - --config-file=converter/pyproject.toml
+          - converter/src
+        #  - --config-file=pyproject.toml
+        #  - --explicit-package-bases
+        files: ^converter/
+        additional_dependencies:
+          # Типы для внешних библиотек
+          - types-requests
+          - types-python-dateutil
+          - types-aiofiles
+          # Основные зависимости проекта
+          - pydantic>=2.6
+          - pydantic-settings>=2.6
+          - sqlalchemy>=2.0
+          - fastapi>=0.135
+          - redis>=7.0
+          - httpx
+          - aiofiles

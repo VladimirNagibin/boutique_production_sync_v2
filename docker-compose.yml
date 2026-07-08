@@ -1,0 +1,91 @@
+services:
+  price_flow:
+    build:
+      context: ./price_flow
+      dockerfile: Dockerfile
+      target: development
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/health/health', timeout=2).raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 50s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      seq:
+        condition: service_healthy
+
+  price_flow-migrations:
+    build:
+      context: ./price_flow
+      dockerfile: Dockerfile
+      target: development
+    restart: no
+    depends_on:
+      db:
+        condition: service_healthy
+    command: |
+      sh -c "
+        alembic upgrade head &&
+        echo 'Migrations completed successfully'
+      "
+    profiles: ["migrate"]
+
+  price_flow-test:
+    build:
+      context: ./price_flow
+      dockerfile: Dockerfile_tests
+    restart: no
+    profiles: ["test"]
+
+  db:
+    image: postgres:17.4-bookworm
+    restart: unless-stopped
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "psql -h localhost -U $${POSTGRES_USER} -c select 1 -d $${POSTGRES_DB}"]
+      interval: 5s
+      retries: 5
+      start_period: 0s
+      timeout: 10s
+
+  converter:
+    build:
+      context: ./converter
+      dockerfile: Dockerfile
+
+  redis:
+    image: redis:7-alpine
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    command: redis-server --requirepass ${REDIS_PASSWORD} --save 60 1 --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+        test: |
+          redis-cli -a ${REDIS_PASSWORD} ping | grep PONG
+        interval: 10s
+        timeout: 5s
+        retries: 5
+        start_period: 20s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  seq:
+    image: datalust/seq:latest
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 5s   # Проверять каждые 5 секунд
+      timeout: 2s    # Таймаут проверки
+      retries: 5     # Количество неудачных попыток перед пометкой как unhealthy
+    restart: unless-stopped

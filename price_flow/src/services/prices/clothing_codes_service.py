@@ -5,13 +5,15 @@ from typing import Annotated, Any
 from fastapi import Depends, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from repositories.clothing_codes_repo import ClothingCodesRepo, get_clothing_code_repo
+from repositories.clothing_codes_repo import (
+    ClothingCodesRepo,
+    get_clothing_code_repo,
+)
 from schemas.supplier_schemas import ClothingCodeCreate, ImportResult
 from services.file_service import FileService, get_file_service
 
 
 class ClothingCodesService:
-
     def __init__(
         self,
         clothing_codes_repo: ClothingCodesRepo,
@@ -31,14 +33,16 @@ class ClothingCodesService:
         )
 
         if not items:
-            raise HTTPException(status_code=404, detail="Нет данных для экспорта")
+            raise HTTPException(
+                status_code=404, detail="Нет данных для экспорта"
+            )
 
         # Конвертируем в формат для экспорта
         export_data: list[dict[str, Any]] = []
         for item in items:
             # Убираем служебные поля
             item_copy = dict(item)
-            item_copy.pop('id', None)
+            item_copy.pop("id", None)
             export_data.append(item_copy)
 
         # Упаковываем в зависимости от формата
@@ -62,14 +66,15 @@ class ClothingCodesService:
             filename_ext = f"{filename}.csv"
 
         # Отправляем файл
-        return StreamingResponse(
+        response: StreamingResponse = StreamingResponse(
             buffer,
             media_type=media_type,
             headers={
                 "Content-Disposition": f"attachment; filename={filename_ext}",
-                "Content-Length": str(buffer.getbuffer().nbytes)
-            }
+                "Content-Length": str(buffer.getbuffer().nbytes),
+            },
         )
+        return response
 
     async def import_clothing_codes(
         self,
@@ -96,16 +101,22 @@ class ClothingCodesService:
 
         # Распаковываем
         try:
-            data = FileService.detect_format_and_unpack(content, file.filename)
+            data = FileService.detect_format_and_unpack(
+                content, file.filename
+            )
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Ошибка распаковки: {e!s}")
+            raise HTTPException(
+                status_code=400, detail=f"Ошибка распаковки: {e!s}"
+            ) from e
 
         if not data:
-            raise HTTPException(status_code=400, detail="Нет данных для импорта")
+            raise HTTPException(
+                status_code=400, detail="Нет данных для импорта"
+            )
 
         cleaned_data = []
         for item in data:
-            clean_item = {}
+            clean_item: dict[str, Any] = {}
             for key, value in item.items():
                 # Если значение float и это NaN, заменяем на None
                 if isinstance(value, float) and math.isnan(value):
@@ -120,12 +131,14 @@ class ClothingCodesService:
         # Фильтруем по поставщику если нужно
         if supplier_id_filter:
             data = [
-                item for item in data if item.get('supplier_id') == supplier_id_filter
+                item
+                for item in data
+                if item.get("supplier_id") == supplier_id_filter
             ]
             if not data:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Нет данных для поставщика {supplier_id_filter}"
+                    detail=f"Нет данных для поставщика {supplier_id_filter}",
                 )
 
         # Валидируем все записи
@@ -136,12 +149,10 @@ class ClothingCodesService:
             try:
                 validated = ClothingCodeCreate(**item)
                 validated_items.append(validated)
-            except Exception as e:
-                validation_errors.append({
-                    "row": idx,
-                    "data": item,
-                    "error": str(e)
-                })
+            except Exception as e:  # noqa: BLE001
+                validation_errors.append(
+                    {"row": idx, "data": item, "error": str(e)}
+                )
 
         # Если только валидация
         if strategy == "validate_only":
@@ -152,7 +163,7 @@ class ClothingCodesService:
                 updated=0,
                 skipped=0,
                 errors=validation_errors,
-                errors_count=len(validation_errors)
+                errors_count=len(validation_errors),
             )
 
         if validation_errors:
@@ -160,8 +171,8 @@ class ClothingCodesService:
                 status_code=400,
                 detail={
                     "message": "Ошибки валидации",
-                    "errors": validation_errors
-                }
+                    "errors": validation_errors,
+                },
             )
 
         # Стратегия: очистка перед импортом
@@ -169,10 +180,12 @@ class ClothingCodesService:
         if strategy == "replace_all":
             deleted_count = await self.clothing_codes_repo.delete_all()
         elif strategy == "replace_supplier" and supplier_id_filter:
-            deleted_count = await self.clothing_codes_repo.delete_all_by_supplier(
-                supplier_id_filter
+            deleted_count = (
+                await self.clothing_codes_repo.delete_all_by_supplier(
+                    supplier_id_filter
+                )
             )
-
+        print(deleted_count)
         # Импортируем
         created = 0
         updated = 0
@@ -180,39 +193,47 @@ class ClothingCodesService:
         import_errors: list[dict[str, Any]] = []
 
         if strategy == "upsert":
-            created, updated, import_errors = await self.clothing_codes_repo.upsert_bulk(
-                validated_items
-            )
+            (
+                created,
+                updated,
+                import_errors,
+            ) = await self.clothing_codes_repo.upsert_bulk(validated_items)
 
         elif strategy == "skip":
             for idx, item in enumerate(validated_items):
                 try:
-                    existing = await self.clothing_codes_repo.get_by_supplier_code(
-                        item.supplier_id, item.code
+                    existing = (
+                        await self.clothing_codes_repo.get_by_supplier_code(
+                            item.supplier_id, item.code
+                        )
                     )
                     if existing:
                         skipped += 1
                     else:
                         await self.clothing_codes_repo.create(item)
                         created += 1
-                except Exception as e:
-                    import_errors.append({
-                        "row": idx,
-                        "data": item.model_dump(),
-                        "error": str(e)
-                    })
+                except Exception as e:  # noqa: BLE001
+                    import_errors.append(
+                        {
+                            "row": idx,
+                            "data": item.model_dump(),
+                            "error": str(e),
+                        }
+                    )
 
         else:  # replace_supplier или replace_all
             for idx, item in enumerate(validated_items):
                 try:
                     await self.clothing_codes_repo.create(item)
                     created += 1
-                except Exception as e:
-                    import_errors.append({
-                        "row": idx,
-                        "data": item.model_dump(),
-                        "error": str(e)
-                    })
+                except Exception as e:  # noqa: BLE001
+                    import_errors.append(
+                        {
+                            "row": idx,
+                            "data": item.model_dump(),
+                            "error": str(e),
+                        }
+                    )
 
         # # Логируем импорт в фоне
         # if background_tasks:
@@ -234,12 +255,14 @@ class ClothingCodesService:
             updated=updated,
             skipped=skipped,
             errors=import_errors,
-            errors_count=len(import_errors)
+            errors_count=len(import_errors),
         )
 
 
 def get_clothing_codes_service(
-    clothing_codes_repo: Annotated[ClothingCodesRepo, Depends(get_clothing_code_repo)],
+    clothing_codes_repo: Annotated[
+        ClothingCodesRepo, Depends(get_clothing_code_repo)
+    ],
     file_service: Annotated[FileService, Depends(get_file_service)],
 ) -> ClothingCodesService:
     return ClothingCodesService(clothing_codes_repo, file_service)

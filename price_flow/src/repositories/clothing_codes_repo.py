@@ -1,3 +1,6 @@
+import types
+
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -9,7 +12,9 @@ from schemas.supplier_schemas import ClothingCodeCreate, ClothingCodeUpdate
 
 
 class ClothingCodesRepo:
-    """Асинхронный репозиторий для работы с таблицей supplier_clothing_codes"""
+    """
+    Асинхронный репозиторий для работы с таблицей supplier_clothing_codes
+    """
 
     def __init__(self, conn_: aiosqlite.Connection | None = None):
         self._conn: aiosqlite.Connection | None = conn_
@@ -35,7 +40,7 @@ class ClothingCodesRepo:
         return self._conn
 
     @asynccontextmanager
-    async def get_connection(self):
+    async def get_connection(self) -> AsyncGenerator[Any]:
         """Контекстный менеджер для получения соединения"""
         db_manager = await self._get_db_manager()
         async with db_manager.get_connection() as conn:
@@ -47,12 +52,17 @@ class ClothingCodesRepo:
             await self._conn.close()
             self._conn = None
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "ClothingCodesRepo":
         """Вход в контекстный менеджер"""
         await self._get_connection()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ) -> None:
         """Выход из контекстного менеджера"""
         await self.close()
 
@@ -64,19 +74,23 @@ class ClothingCodesRepo:
         self, query: str, params: tuple[Any, ...] = ()
     ) -> list[dict[str, Any]]:
         """Выполнить запрос и вернуть все результаты"""
-        async with self.get_connection() as conn:
-            async with conn.execute(query, params) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+        async with (
+            self.get_connection() as conn,
+            conn.execute(query, params) as cursor,
+        ):
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
     async def _execute_and_fetch_one(
-        self, query: str, params: tuple[Any, ... ] = ()
+        self, query: str, params: tuple[Any, ...] = ()
     ) -> dict[str, Any] | None:
         """Выполнить запрос и вернуть один результат"""
-        async with self.get_connection() as conn:
-            async with conn.execute(query, params) as cursor:
-                row = await cursor.fetchone()
-                return dict(row) if row else None
+        async with (
+            self.get_connection() as conn,
+            conn.execute(query, params) as cursor,
+        ):
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
     async def _execute(
         self, query: str, params: tuple[Any, ...] = ()
@@ -95,7 +109,7 @@ class ClothingCodesRepo:
         skip: int = 0,
         limit: int = 1000,
         order_by: str = "id",
-        order_dir: str = "ASC"
+        order_dir: str = "ASC",
     ) -> list[dict[str, Any]]:
         """Получить все записи с фильтрацией по поставщику"""
         query = "SELECT * FROM supplier_clothing_codes"
@@ -114,18 +128,19 @@ class ClothingCodesRepo:
         """Получить запись по ID"""
         return await self._execute_and_fetch_one(
             "SELECT * FROM supplier_clothing_codes WHERE id = ?",
-            (product_id,)
+            (product_id,),
         )
 
     async def get_by_supplier_code(
-        self,
-        supplier_id: int,
-        code: int
+        self, supplier_id: int, code: int
     ) -> dict[str, Any] | None:
         """Получить запись по коду поставщика"""
         return await self._execute_and_fetch_one(
-            "SELECT * FROM supplier_clothing_codes WHERE supplier_id = ? AND code = ?",
-            (supplier_id, code)
+            (
+                "SELECT * FROM supplier_clothing_codes "
+                "WHERE supplier_id = ? AND code = ?"
+            ),
+            (supplier_id, code),
         )
 
     async def get_by_supplier_codes(
@@ -137,13 +152,13 @@ class ClothingCodesRepo:
         if not codes:
             return []
 
-        placeholders = ','.join(['?'] * len(codes))
-        query = (
-            "SELECT * FROM supplier_clothing_codes WHERE supplier_id = ? "
-            f"AND code IN ({placeholders})"
+        placeholders = ",".join(["?"] * len(codes))
+        _SQL_GET_BY_SUPPLIER_CODES = (
+            "SELECT * FROM supplier_clothing_codes "
+            "WHERE supplier_id = ? AND code IN ({})"
         )
-        params = [supplier_id] + codes
-
+        query = _SQL_GET_BY_SUPPLIER_CODES.format(placeholders)
+        params = [supplier_id, *codes]
         return await self._execute_and_fetch_all(query, tuple(params))
 
     async def create(self, data: ClothingCodeCreate) -> int:
@@ -156,12 +171,20 @@ class ClothingCodesRepo:
         """
 
         values = (
-            data.code, data.name, data.category, data.subcategory, data.supplier_id,
-            data.product_summary, data.size, data.color, data.supplier_code, data.description
+            data.code,
+            data.name,
+            data.category,
+            data.subcategory,
+            data.supplier_id,
+            data.product_summary,
+            data.size,
+            data.color,
+            data.supplier_code,
+            data.description,
         )
 
         cursor = await self._execute(query, values)
-        return cursor.lastrowid
+        return int(cursor.lastrowid)
 
     async def create_bulk(self, items: list[ClothingCodeCreate]) -> int:
         """Массовое создание записей"""
@@ -177,13 +200,23 @@ class ClothingCodesRepo:
 
         values_list: list[tuple[Any, ...]] = []
         for item in items:
-            values_list.append((
-                item.code, item.name, item.category, item.subcategory, item.supplier_id,
-                item.product_summary, item.size, item.color, item.supplier_code, item.description
-            ))
+            values_list.append(
+                (
+                    item.code,
+                    item.name,
+                    item.category,
+                    item.subcategory,
+                    item.supplier_id,
+                    item.product_summary,
+                    item.size,
+                    item.color,
+                    item.supplier_code,
+                    item.description,
+                )
+            )
         conn = await self._get_connection()
         cursor = await conn.executemany(query, values_list)
-        return cursor.rowcount
+        return int(cursor.rowcount)
 
     async def update(self, product_id: int, data: ClothingCodeUpdate) -> bool:
         """Обновить запись"""
@@ -194,36 +227,40 @@ class ClothingCodesRepo:
             return True
 
         # Формируем SET часть запроса
-        set_clause = ", ".join([f"{key} = ?" for key in update_data.keys()])
+        set_clause = ", ".join(f"{key} = ?" for key in update_data)
 
         values = list(update_data.values())
         values.append(product_id)  # для WHERE
-
-        query = f"UPDATE supplier_clothing_codes SET {set_clause} WHERE id = ?"
+        _SQL_UPDATE_BY_SUPPLIER_CODES = (
+            "UPDATE supplier_clothing_codes SET {} WHERE id = ?"
+        )
+        query = _SQL_UPDATE_BY_SUPPLIER_CODES.format(set_clause)
+        # query = (
+        #     f"UPDATE supplier_clothing_codes SET {set_clause} WHERE id = ?"
+        # )
 
         cursor = await self._execute(query, tuple(values))
-        return cursor.rowcount > 0
+        return bool(cursor.rowcount > 0)
 
     async def delete(self, product_id: int) -> bool:
         """Удалить запись"""
         cursor = await self._execute(
-            "DELETE FROM supplier_clothing_codes WHERE id = ?",
-            (product_id,)
+            "DELETE FROM supplier_clothing_codes WHERE id = ?", (product_id,)
         )
-        return cursor.rowcount > 0
+        return bool(cursor.rowcount > 0)
 
     async def delete_all_by_supplier(self, supplier_id: int) -> int:
         """Удалить все записи поставщика"""
         cursor = await self._execute(
             "DELETE FROM supplier_clothing_codes WHERE supplier_id = ?",
-            (supplier_id,)
+            (supplier_id,),
         )
-        return cursor.rowcount
+        return int(cursor.rowcount)
 
     async def delete_all(self) -> int:
         """Удалить все записи"""
         cursor = await self._execute("DELETE FROM supplier_clothing_codes")
-        return cursor.rowcount
+        return int(cursor.rowcount)
 
     async def count(self, supplier_id: int | None = None) -> int:
         """Подсчитать количество записей"""
@@ -235,7 +272,7 @@ class ClothingCodesRepo:
             params.append(supplier_id)
 
         result = await self._execute_and_fetch_one(query, tuple(params))
-        return result['count'] if result else 0
+        return result["count"] if result else 0
 
     # ----------------------------------------------------------------------
     # Бизнес-логика
@@ -247,21 +284,22 @@ class ClothingCodesRepo:
         Возвращает: {"action": "created/updated", "id": id}
         """
         # Проверяем существование
-        existing = await self.get_by_supplier_code(data.supplier_id, data.code)
+        existing = await self.get_by_supplier_code(
+            data.supplier_id, data.code
+        )
 
         if existing:
             # Обновляем
             update_data = ClothingCodeUpdate(**data.model_dump())
-            await self.update(existing['id'], update_data)
-            return {"action": "updated", "id": existing['id']}
+            await self.update(existing["id"], update_data)
+            return {"action": "updated", "id": existing["id"]}
         else:
             # Создаем
             new_id = await self.create(data)
             return {"action": "created", "id": new_id}
 
     async def upsert_bulk(
-        self,
-        items: list[ClothingCodeCreate]
+        self, items: list[ClothingCodeCreate]
     ) -> tuple[int, int, list[dict[str, Any]]]:
         """
         Массовый upsert
@@ -278,20 +316,15 @@ class ClothingCodesRepo:
                     created += 1
                 else:
                     updated += 1
-            except Exception as e:
-                errors.append({
-                    "row": idx,
-                    "data": item.model_dump(),
-                    "error": str(e)
-                })
+            except Exception as e:  # noqa: BLE001
+                errors.append(
+                    {"row": idx, "data": item.model_dump(), "error": str(e)}
+                )
 
         return created, updated, errors
 
     async def get_by_filters(
-        self,
-        filters: dict[str, Any],
-        skip: int = 0,
-        limit: int = 100
+        self, filters: dict[str, Any], skip: int = 0, limit: int = 100
     ) -> list[dict[str, Any]]:
         """Получить записи по произвольным фильтрам"""
         where_clauses: list[str] = []
@@ -299,9 +332,9 @@ class ClothingCodesRepo:
 
         for key, value in filters.items():
             if value is not None:
-                if isinstance(value, (list, tuple)):
+                if isinstance(value, list | tuple):
                     # IN оператор
-                    placeholders = ','.join(['?'] * len(value))
+                    placeholders = ",".join(["?"] * len(value))
                     where_clauses.append(f"{key} IN ({placeholders})")
                     params.extend(value)
                 else:
@@ -309,8 +342,15 @@ class ClothingCodesRepo:
                     params.append(value)
 
         where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
-
-        query = f"SELECT * FROM supplier_clothing_codes WHERE {where_sql} ORDER BY id LIMIT ? OFFSET ?"
+        _SQL_SELECT_BY_SUPPLIER_CODES = (
+            "SELECT * FROM supplier_clothing_codes WHERE {} "
+            "ORDER BY id LIMIT ? OFFSET ?"
+        )
+        query = _SQL_SELECT_BY_SUPPLIER_CODES.format(where_sql)
+        # query = (
+        #     f"SELECT * FROM supplier_clothing_codes WHERE {where_sql} "
+        #     "ORDER BY id LIMIT ? OFFSET ?"
+        # )
         params.extend([limit, skip])
 
         return await self._execute_and_fetch_all(query, tuple(params))
@@ -318,9 +358,14 @@ class ClothingCodesRepo:
     async def search(
         self,
         search_term: str,
-        fields: list[str] = ['name', 'code', 'supplier_code', 'description'],
+        fields: tuple[str, ...] = (
+            "name",
+            "code",
+            "supplier_code",
+            "description",
+        ),
         supplier_id: int | None = None,
-        limit: int = 100
+        limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Полнотекстовый поиск"""
         if not search_term:
@@ -335,11 +380,15 @@ class ClothingCodesRepo:
         if supplier_id:
             where_sql = f"({where_sql}) AND supplier_id = ?"
             params.append(supplier_id)
-
-        query = (
-            f"SELECT * FROM supplier_clothing_codes WHERE {where_sql} "
+        _SQL_SELECT_BY_SUPPLIER_CODES = (
+            "SELECT * FROM supplier_clothing_codes WHERE {} "
             "ORDER BY id LIMIT ?"
         )
+        query = _SQL_SELECT_BY_SUPPLIER_CODES.format(where_sql)
+        # query = (
+        #     f"SELECT * FROM supplier_clothing_codes WHERE {where_sql} "
+        #     "ORDER BY id LIMIT ?"
+        # )
         params.append(limit)
 
         return await self._execute_and_fetch_all(query, tuple(params))
@@ -350,9 +399,11 @@ class ClothingCodesRepo:
             "SELECT DISTINCT supplier_id FROM supplier_clothing_codes "
             "ORDER BY supplier_id"
         )
-        return [row['supplier_id'] for row in result]
+        return [row["supplier_id"] for row in result]
 
-    async def get_statistics(self, supplier_id: int | None = None) -> dict[str, Any]:
+    async def get_statistics(
+        self, supplier_id: int | None = None
+    ) -> dict[str, Any]:
         """Получить расширенную статистику"""
         base_query = "FROM supplier_clothing_codes"
         params: list[Any] = []
@@ -363,25 +414,39 @@ class ClothingCodesRepo:
 
         # Общее количество
         count_query = f"SELECT COUNT(*) as count {base_query}"
-        count_result = await self._execute_and_fetch_one(count_query, tuple(params))
-        total = count_result['count'] if count_result else 0
+        count_result = await self._execute_and_fetch_one(
+            count_query, tuple(params)
+        )
+        total = count_result["count"] if count_result else 0
 
         # Количество с размерами
-        size_query = f"SELECT COUNT(*) as count {base_query} AND size IS NOT NULL AND size != ''"
-        size_result = await self._execute_and_fetch_one(size_query, tuple(params))
-        with_size = size_result['count'] if size_result else 0
+        size_query = (
+            f"SELECT COUNT(*) as count {base_query} AND size IS NOT NULL "
+            "AND size != ''"
+        )
+        size_result = await self._execute_and_fetch_one(
+            size_query, tuple(params)
+        )
+        with_size = size_result["count"] if size_result else 0
 
         # Количество с цветами
-        color_query = f"SELECT COUNT(*) as count {base_query} AND color IS NOT NULL AND color != ''"
-        color_result = await self._execute_and_fetch_one(color_query, tuple(params))
-        with_color = color_result['count'] if color_result else 0
+        color_query = (
+            f"SELECT COUNT(*) as count {base_query} AND color IS NOT NULL "
+            "AND color != ''"
+        )
+        color_result = await self._execute_and_fetch_one(
+            color_query, tuple(params)
+        )
+        with_color = color_result["count"] if color_result else 0
 
         # Последние обновления
         recent_query = f"""
             SELECT created_at, updated_at {base_query}
             ORDER BY updated_at DESC LIMIT 1
         """
-        recent_result = await self._execute_and_fetch_one(recent_query, tuple(params))
+        recent_result = await self._execute_and_fetch_one(
+            recent_query, tuple(params)
+        )
 
         return {
             "supplier_id": supplier_id,
@@ -390,8 +455,12 @@ class ClothingCodesRepo:
             "with_color": with_color,
             "without_size": total - with_size,
             "without_color": total - with_color,
-            "last_updated": recent_result['updated_at'] if recent_result else None,
-            "last_created": recent_result['created_at'] if recent_result else None
+            "last_updated": recent_result["updated_at"]
+            if recent_result
+            else None,
+            "last_created": recent_result["created_at"]
+            if recent_result
+            else None,
         }
 
 

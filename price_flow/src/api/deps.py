@@ -5,12 +5,14 @@ from core.settings import settings
 
 
 API_KEY_NAME = "X-API-Key"
-API_KEY = settings.SECRET_KEY
+API_KEY = settings.encryption_key
 
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 
-async def verify_api_key(api_key: str | None = Depends(api_key_header)) -> str:
+async def verify_api_key(
+    api_key: str | None = Depends(api_key_header),
+) -> str:
     if not api_key:
         raise HTTPException(
             status_code=401,
