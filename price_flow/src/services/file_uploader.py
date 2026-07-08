@@ -4,7 +4,7 @@ import zipfile
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import aiofiles
 
@@ -22,113 +22,143 @@ from core.settings import settings
 from schemas.response_schemas import SuccessResponse
 
 
-UPLOAD_DIR = "uploads"  # Директория для загрузки файлов
-MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB максимальный размер файла
+# ===== Константы =====
+DEFAULT_UPLOAD_DIR: Final[str] = "uploads"
+DEFAULT_MAX_FILE_SIZE: Final[int] = 100 * 1024 * 1024  # 100 MB
+CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MB
 
 
 class FileUploader:
+    """
+    Асинхронный загрузчик файлов с валидацией ZIP-архивов.
+    """
+
     def __init__(
         self,
         upload_dir: str | None = None,
         max_file_size: int | None = None,
-    ):
-        self.upload_dir = settings.app.base_dir / Path(
-            upload_dir or UPLOAD_DIR
-        )
-        self.max_file_size = int(max_file_size or MAX_FILE_SIZE)
+    ) -> None:
+        """
+        Инициализирует загрузчик.
 
-        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        Args:
+            upload_dir: Директория для сохранения файлов
+            (по умолчанию 'uploads').
+            max_file_size: Максимальный размер файла в байтах.
+        """
+        self._upload_dir: Path = settings.app.base_dir / Path(
+            upload_dir or DEFAULT_UPLOAD_DIR
+        )
+        self._max_file_size: int = int(max_file_size or DEFAULT_MAX_FILE_SIZE)
+
+        self._upload_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "FileUploader initialized",
+            extra={
+                "upload_dir": str(self._upload_dir),
+                "max_file_size": self._max_file_size,
+            },
+        )
 
     async def upload_file(
         self, file: UploadFile, save_subpath: str | None = None
     ) -> SuccessResponse:
         """
-        Асинхронно загружает ZIP файл и сохраняет его локально
+        Асинхронно сохраняет загруженный ZIP-файл с проверками.
 
         Args:
-            file: Загружаемый ZIP файл
-            save_subpath: Опциональный подпуть для сохранения файла
+            file: Загружаемый файл (UploadFile).
+            save_subpath: Поддиректория внутри upload_dir.
 
         Returns:
-            SuccessResponse с информацией о сохраненном файле
+            SuccessResponse с деталями сохранённого файла.
 
         Raises:
-            FileNotZipError: Если файл не является ZIP архивом
-            FileTooLargeError: Если размер файла превышает лимит
-            ZipExtractionError: Если не удалось проверить ZIP архив
-            Exception: При других ошибках сохранения файла
+            FileNotZipError: Если файл не имеет расширения .zip.
+            FileTooLargeError: Если файл превышает лимит размера.
+            ZipExtractionError: Если файл не является валидным ZIP-архивом.
+            FileSystemError: При ошибках записи на диск.
         """
-
-        # Проверяем, что файл имеет расширение .zip
-        self._validate_file_extension(file)
-        save_dir = self._get_save_directory(save_subpath)
-
         original_name = file.filename or "unknown_upload.zip"
+        logger.info(
+            "Starting file upload",
+            extra={"filename": original_name, "subpath": save_subpath},
+        )
 
-        logger.info(f"Начало загрузки файла: {original_name}")
-        # Генерируем уникальное имя файла чтобы избежать перезаписи
-        unique_filename = self._generate_unique_filename(original_name)
-        file_path = save_dir / unique_filename
+        # 1. Валидация расширения
+        self._validate_extension(file)
+
+        # 2. Подготовка директории и имени
+        save_dir = self._get_save_directory(save_subpath)
+        unique_name = self._generate_unique_filename(original_name)
+        file_path = save_dir / unique_name
 
         try:
-            # Асинхронно сохраняем файл с проверкой размера
+            # 3. Сохранение с проверкой размера
             file_size = await self._save_file_with_size_check(
                 file=file, file_path=file_path
             )
 
-            # Проверяем валидность ZIP архива
+            # 4. Проверка ZIP-архива (синхронная, в потоке)
             zip_info = await self._validate_zip_file(file_path)
 
-            # Получаем информацию о файле
+            # 5. Формирование ответа
             file_info = self._build_file_info(
                 original_filename=original_name,
-                saved_filename=unique_filename,
+                saved_filename=unique_name,
                 file_path=file_path,
                 file_size=file_size,
                 zip_info=zip_info,
             )
 
             logger.info(
-                f"Файл успешно сохранен: {file_path} (Размер: {file_size} "
-                "байт)"
+                "File uploaded successfully",
+                extra={"path": str(file_path), "size": file_size},
             )
-
             return SuccessResponse(
-                message="ZIP файл успешно сохранен", details=file_info
+                message="ZIP file uploaded successfully",
+                details=file_info,
             )
 
         except (FileTooLargeError, ZipExtractionError, FileNotZipError) as e:
-            # Ожидаемые ошибки бизнес-логики
-            logger.warning(f"Ошибка валидации файла {original_name}: {e}")
-            await self._safe_remove_file(file_path)
-            raise
-        except Exception as e:
-            # Непредвиденные системные ошибки
-            logger.exception(
-                f"Критическая ошибка при сохранении файла {original_name}: "
-                f"{e}"
+            # Ожидаемые ошибки бизнес-логики – логируем и пробрасываем
+            logger.warning(
+                "File validation failed",
+                extra={"filename": original_name, "error": str(e)},
             )
             await self._safe_remove_file(file_path)
-            raise FileSystemError(ErrorMessages.SAVE_FAILED.message) from e
+            raise
 
-    def _validate_file_extension(self, file: UploadFile) -> None:
+        except Exception as e:
+            # Непредвиденные системные ошибки
+            logger.error(
+                "Unexpected error during file upload",
+                extra={"filename": original_name, "error": str(e)},
+                exc_info=True,
+            )
+            await self._safe_remove_file(file_path)
+            raise FileSystemError(
+                message=ErrorMessages.SAVE_FAILED.message,
+                details={"original_error": str(e)},
+            ) from e
+
+    # ----- Приватные методы -----
+
+    def _validate_extension(self, file: UploadFile) -> None:
         """
-        Проверяет, что файл имеет расширение .zip
-
-        Args:
-            file: Проверяемый файл
+        Проверяет расширение файла (.zip).
 
         Raises:
-            FileNotZipError: Если файл не является ZIP архивом
+            FileNotZipError: Если расширение не .zip.
         """
         if not file.filename or not file.filename.lower().endswith(".zip"):
             logger.warning(
-                "Попытка загрузки файла с неверным расширением: "
-                f"{file.filename}"
+                "Invalid file extension",
+                extra={"filename": file.filename},
             )
             raise FileNotZipError(
-                file.filename if file.filename else "empty_filename",
-                ErrorMessages.NOT_ZIP.message,
+                path=file.filename or "unknown",
+                message=ErrorMessages.NOT_ZIP.message,
             )
 
     def _get_save_directory(self, save_subpath: str | None = None) -> Path:
@@ -144,9 +174,9 @@ class FileUploader:
         if save_subpath:
             # Очищаем путь от потенциально опасных символов
             safe_subpath = Path(save_subpath).name
-            save_dir: Path = self.upload_dir / safe_subpath
+            save_dir: Path = self._upload_dir / safe_subpath
         else:
-            save_dir = Path(self.upload_dir)
+            save_dir = Path(self._upload_dir)
 
         # Создаем директорию если ее нет
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -185,40 +215,47 @@ class FileUploader:
 
         Raises:
             FileTooLargeError: Если размер файла превышает лимит
+             FileSystemError: При ошибках записи.
         """
         file_size = 0
-        chunk_size = 1024 * 1024  # 1MB
 
         try:
             async with aiofiles.open(file_path, "wb") as buffer:
-                while chunk := await file.read(chunk_size):
+                while chunk := await file.read(CHUNK_SIZE):
                     file_size += len(chunk)
-
-                    self._ensure_size_limit_not_exceeded(file_path, file_size)
-
+                    self._check_size_limit(file_path, file_size)
                     await buffer.write(chunk)
-
         except FileTooLargeError:
             # Пробрасываем дальше, чтобы удалить файл в блоке выше
             raise
         except OSError as e:
             # Ошибки диска (нет места, права доступа)
-            logger.error(f"Ошибка записи на диск: {e}")
-            raise RuntimeError(ErrorMessages.SAVE_FAILED.message) from e
+            logger.error(
+                "Disk write error",
+                extra={"path": str(file_path), "error": str(e)},
+            )
+            raise FileSystemError(
+                message=ErrorMessages.SAVE_FAILED.message,
+                details={"path": str(file_path), "error": str(e)},
+            ) from e
 
         return file_size
 
-    def _ensure_size_limit_not_exceeded(
-        self, file_path: Path, current_size: int
-    ) -> None:
+    def _check_size_limit(self, file_path: Path, current_size: int) -> None:
         """
-        Проверяет размер файла. Выбрасывает исключение, если лимит превышен.
+        Проверяет, не превышен ли лимит размера.
+
+        Raises:
+            FileTooLargeError: Если лимит превышен.
         """
-        if current_size > self.max_file_size:
-            limit_mb = self.max_file_size / (1024 * 1024)
+        if current_size > self._max_file_size:
+            limit_mb = self._max_file_size / (1024 * 1024)
             logger.warning(
-                f"Превышен лимит размера файла: {current_size} > "
-                f"{self.max_file_size}"
+                "File size limit exceeded",
+                extra={
+                    "current_size": current_size,
+                    "max_size": self._max_file_size,
+                },
             )
             error_message = (
                 f"{ErrorMessages.SIZE_LIMIT.message} ({limit_mb:.2f}MB)"
@@ -227,7 +264,7 @@ class FileUploader:
                 file_path,
                 file_size=current_size,
                 message=error_message,
-                max_file_size=self.max_file_size,
+                max_file_size=self._max_file_size,
             )
 
     async def _validate_zip_file(self, file_path: Path) -> dict[str, Any]:
@@ -245,33 +282,41 @@ class FileUploader:
         """
 
         def _extract_zip_info() -> dict[str, Any]:
-            with zipfile.ZipFile(file_path, "r") as zip_ref:
-                file_list = zip_ref.namelist()
-                return {
-                    "total_files": len(file_list),
-                    "files": file_list[:10],  # Ограничиваем вывод
-                    "is_valid": True,
-                    "compressed_size": file_path.stat().st_size,
-                    "comment": (
-                        zip_ref.comment.decode("utf-8", errors="ignore")
-                        if zip_ref.comment
-                        else None
-                    ),
-                }
+            try:
+                with zipfile.ZipFile(file_path, "r") as zip_ref:
+                    file_list = zip_ref.namelist()
+                    return {
+                        "total_files": len(file_list),
+                        "files_sample": file_list[:10],  # Ограничиваем вывод
+                        "is_valid": True,
+                        "compressed_size": file_path.stat().st_size,
+                        "comment": (
+                            zip_ref.comment.decode("utf-8", errors="ignore")
+                            if zip_ref.comment
+                            else None
+                        ),
+                    }
+            except zipfile.BadZipFile as e:
+                raise ZipExtractionError(
+                    path=file_path,
+                    message=f"Invalid ZIP file: {e}",
+                ) from e
+            except OSError as e:
+                raise ZipExtractionError(
+                    path=file_path,
+                    message=f"Failed to read ZIP file: {e}",
+                ) from e
 
         try:
             return await asyncio.to_thread(_extract_zip_info)
-
-        except zipfile.BadZipFile as e:
-            logger.warning(f"Невалидный ZIP архив: {file_path.name}")
+        except ZipExtractionError:
+            # Пробрасываем кастомное исключение
+            raise
+        except Exception as e:
+            # Любая другая ошибка – оборачиваем в ZipExtractionError
             raise ZipExtractionError(
-                file_path, ErrorMessages.INVALID_ZIP.message
-            ) from e
-        except OSError as e:
-            # Например, файл был удален между сохранением и проверкой
-            logger.error(f"Ошибка доступа к файлу при валидации: {e}")
-            raise ZipExtractionError(
-                file_path, ErrorMessages.VALIDATION_FAILED.message
+                path=file_path,
+                message=f"Unexpected error during ZIP validation: {e}",
             ) from e
 
     def _build_file_info(
@@ -312,15 +357,30 @@ class FileUploader:
         Args:
             file_path: Путь к файлу для удаления
         """
-        if file_path.exists():
-            try:
-                # unlink() - это Path.remove(), но может блокировать I/O,
-                # поэтому оборачиваем в to_thread для чистоты асинхронности
-                await asyncio.to_thread(file_path.unlink)
-                logger.debug(f"Временный файл удален: {file_path}")
-            except OSError as e:
-                logger.error(f"Не удалось удалить файл {file_path}: {e}")
+        try:
+            # unlink() - это Path.remove(), но может блокировать I/O,
+            # поэтому оборачиваем в to_thread для чистоты асинхронности
+            await asyncio.to_thread(file_path.unlink)
+            logger.debug(
+                "Temporary file removed",
+                extra={"path": str(file_path)},
+            )
+        except FileNotFoundError:
+            # Файл уже отсутствует – ничего не делаем
+            logger.debug(
+                "File already removed, skipping",
+                extra={"path": str(file_path)},
+            )
+        except OSError as e:
+            logger.error(
+                "Failed to remove temporary file",
+                extra={"path": str(file_path), "error": str(e)},
+            )
 
 
+# ===== Фабрика для DI =====
 def get_file_uploader() -> FileUploader:
+    """
+    Возвращает экземпляр FileUploader для внедрения зависимостей.
+    """
     return FileUploader()

@@ -1,9 +1,14 @@
 import zipfile
 
 from pathlib import Path
+from typing import Final
 
 from core.exceptions.file import FileAppNotFoundError, ZipExtractionError
 from core.logger import logger
+
+
+# ===== Константы =====
+MAX_FILES_TO_LOG: Final[int] = 10
 
 
 def extract_zip(
@@ -26,32 +31,40 @@ def extract_zip(
         ZipFileNotFoundError: Если файл не найден
         ZipExtractionError: Если произошла ошибка при распаковке
     """
-    try:
-        zip_path_obj = Path(zip_path)
-        logger.info(f"Начало распаковки архива: {zip_path_obj}")
+    zip_path_obj = Path(zip_path)
+    logger.info(
+        "Starting ZIP extraction", extra={"zip_path": str(zip_path_obj)}
+    )
 
-        # Проверка существования файла
-        _validate_file_exists(zip_path_obj)
+    # Валидация входных данных
+    _validate_file(zip_path_obj)
 
-        # Определяем директорию для распаковки
-        extract_to_obj = _get_extraction_directory(zip_path_obj, extract_to)
-        logger.debug(f"Директория для распаковки: {extract_to_obj}")
+    # Определяем директорию для распаковки
+    extract_to_obj = _resolve_extract_path(zip_path_obj, extract_to)
+    logger.debug(
+        "Extraction target", extra={"extract_to": str(extract_to_obj)}
+    )
 
-        # Создаем директорию, если не существует
-        extract_to_obj.mkdir(parents=True, exist_ok=True)
+    # Создаем директорию, если не существует
+    extract_to_obj.mkdir(parents=True, exist_ok=True)
 
-        return _perform_extraction(zip_path_obj, extract_to_obj, password)
+    # Выполняем распаковку
+    _perform_extraction(zip_path_obj, extract_to_obj, password)
 
-    # Ловим кастомные исключения приложения
-    except (FileAppNotFoundError, ZipExtractionError) as e:
-        logger.error(e)
-        raise
+    # Логируем результат
+    _log_success(zip_path_obj, extract_to_obj)
+    return True
 
 
-def _validate_file_exists(path: Path) -> None:
+# ===== Приватные вспомогательные функции =====
+
+
+def _validate_file(path: Path) -> None:
     """
-    Проверяет существование файла и выбрасывает исключение.
-    Это позволяет сделать основной код чище и избежать абстракции raise.
+    Проверяет существование файла и его тип.
+
+    Raises:
+        FileAppNotFoundError: Если файл отсутствует или не является файлом.
     """
     if not path.exists():
         raise FileAppNotFoundError(path, f"Файл не найден: {path}")
@@ -59,11 +72,16 @@ def _validate_file_exists(path: Path) -> None:
         raise FileAppNotFoundError(path, f"Путь не является файлом: {path}")
 
 
-def _get_extraction_directory(
+def _resolve_extract_path(
     zip_path: Path, extract_to: str | Path | None
 ) -> Path:
-    """Определяет директорию для распаковки."""
-    if extract_to:
+    """
+    Определяет конечную директорию для распаковки.
+
+    Если `extract_to` не задан, создаёт папку рядом с архивом с именем архива
+    (без расширения).
+    """
+    if extract_to is not None:
         return Path(extract_to)
     # Распаковываем в папку с именем архива (без расширения)
     return zip_path.parent / zip_path.stem
@@ -71,71 +89,85 @@ def _get_extraction_directory(
 
 def _perform_extraction(
     zip_path: Path, extract_to: Path, password: str | None
-) -> bool:
-    """Выполняет распаковку ZIP архива."""
+) -> None:
+    """
+    Выполняет непосредственную распаковку архива.
+
+    Raises:
+        ZipExtractionError: При любых ошибках распаковки.
+    """
     try:
         # Открываем ZIP файл
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            pwd_bytes = password.encode("utf-8") if password else None
-
-            # Пробуем распаковать
+            pwd_bytes = (
+                password.encode("utf-8") if password is not None else None
+            )
             try:
                 zip_ref.extractall(extract_to, pwd=pwd_bytes)
             except RuntimeError as e:
                 _handle_runtime_error(zip_path, e)
-                return False
             except zipfile.BadZipFile as e:
-                _handle_zip_extraction_error(
-                    zip_path, f"Ошибка при чтении архива: {e}"
-                )
-                return False
-            # Логируем успешную распаковку
-            _log_extraction_success(extract_to, zip_ref)
-            return True
-
+                _raise_extraction_error(zip_path, f"Bad ZIP file: {e}")
     except zipfile.BadZipFile as e:
-        _handle_zip_extraction_error(
+        _raise_extraction_error(
             zip_path,
-            f"Файл поврежден или не является ZIP архивом: {zip_path}: {e}",
+            f"Bad ZIP file: {e}",
         )
-        return False
 
 
 def _handle_runtime_error(zip_path: Path, error: RuntimeError) -> None:
-    """Обрабатывает RuntimeError при распаковке."""
+    """
+    Обрабатывает RuntimeError, возникающий при распаковке.
+    Обычно это связано с паролем или повреждённым архивом.
+    """
     error_msg = str(error).lower()
 
     if any(keyword in error_msg for keyword in ["password", "encrypted"]):
-        _handle_zip_extraction_error(
-            zip_path, "Архив защищен паролем или пароль неверен."
+        _raise_extraction_error(
+            zip_path, "Archive is encrypted or password is incorrect."
         )
 
-    _handle_zip_extraction_error(zip_path, f"Ошибка распаковки: {error}")
+    _raise_extraction_error(zip_path, f"Extraction error: {error}")
 
 
-def _log_extraction_success(
-    extract_to: Path, zip_ref: zipfile.ZipFile
-) -> None:
-    """Логирует информацию об успешной распаковке."""
-    file_list = zip_ref.namelist()
-    file_count = len(file_list)
-
-    logger.info(f"Успешно распаковано в: {extract_to}")
-    logger.info(f"Файлов в архиве: {file_count}")
-
-    if file_list:
-        logger.info("Содержимое архива:")
-
-        # Показываем первые 10 файлов
-        max_files_to_show = 10
-        for i, filename in enumerate(file_list[:max_files_to_show], 1):
-            logger.info(f"  {i:3d}. {filename}")
-
-        # Если файлов больше, показываем только количество
-        if file_count > max_files_to_show:
-            remaining = file_count - max_files_to_show
-            logger.info(f"  ... и еще {remaining} файлов")
+def _raise_extraction_error(zip_path: Path, detail: str) -> None:
+    """
+    Вспомогательная функция для единообразного вызова ZipExtractionError.
+    """
+    logger.error(
+        "ZIP extraction failed",
+        extra={"zip_path": str(zip_path), "detail": detail},
+    )
+    raise ZipExtractionError(zip_path, detail)
 
 
-def _handle_zip_extraction_error(zip_path: Path, message: str) -> bool:
-    raise ZipExtractionError(zip_path, message)
+def _log_success(zip_path: Path, extract_to: Path) -> None:
+    """
+    Логирует информацию об успешной распаковке: количество файлов, список
+    (первые несколько).
+    """
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            file_list = zip_ref.namelist()
+            file_count = len(file_list)
+            logger.info(
+                "ZIP extraction successful",
+                extra={
+                    "extract_to": str(extract_to),
+                    "file_count": file_count,
+                },
+            )
+            if file_count:
+                # Логируем первые несколько файлов для отладки
+                sample = file_list[:MAX_FILES_TO_LOG]
+                logger.debug(
+                    "Extracted files (sample)",
+                    extra={"sample": sample, "total": file_count},
+                )
+    except zipfile.BadZipFile as e:
+        # Это крайний случай – если архив испортился после успешной распаковки
+        # (маловероятно)
+        logger.warning(
+            "Could not read ZIP for logging after extraction",
+            extra={"zip_path": str(zip_path), "error": str(e)},
+        )
