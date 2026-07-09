@@ -19,9 +19,14 @@ from core.exceptions.file import (
     ZipExtractionError,
 )
 from core.logger import logger
-from repositories.supplier_codes_repo import (
-    SupplierCodesRepo,
-    get_supplier_codes_repo,
+
+# from repositories.supplier_codes_repo import (
+#     SupplierCodesRepo,
+#     get_supplier_codes_repo,
+# )
+from repositories.supplier_product_codes_repo import (
+    SupplierProductCodeRepository,
+    get_supplier_product_codes_repo,
 )
 from schemas.response_schemas import SuccessResponse
 from services.file_uploader import FileUploader, get_file_uploader
@@ -35,7 +40,7 @@ class LoaderCodes:
 
     def __init__(
         self,
-        supplier_codes_repo: SupplierCodesRepo,
+        supplier_codes_repo: SupplierProductCodeRepository,
         file_uploader: FileUploader,
     ) -> None:
         self.supplier_codes_repo = supplier_codes_repo
@@ -86,7 +91,11 @@ class LoaderCodes:
             csv_file_path = all_files[0]
 
             # 5. Загрузка в БД
-            db_result = await self.load_file_to_db(str(csv_file_path))
+            db_result = (
+                await self.supplier_codes_repo.load_from_csv_with_truncate(
+                    str(csv_file_path)
+                )
+            )
 
             return SuccessResponse(
                 message="Data successfully processed", details=db_result
@@ -288,7 +297,8 @@ async def remove_directory_async(dir_path: str | Path) -> bool:
 
 def get_loader_codes(
     supplier_codes_repo: Annotated[
-        SupplierCodesRepo, Depends(get_supplier_codes_repo)
+        SupplierProductCodeRepository,
+        Depends(get_supplier_product_codes_repo),
     ],
     file_uploader: Annotated[FileUploader, Depends(get_file_uploader)],
 ) -> LoaderCodes:

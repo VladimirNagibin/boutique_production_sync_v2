@@ -5,7 +5,7 @@ from core.settings import settings
 
 
 API_KEY_NAME = "X-API-Key"
-API_KEY = settings.encryption_key
+API_KEY = settings.auth.secret_key
 
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
