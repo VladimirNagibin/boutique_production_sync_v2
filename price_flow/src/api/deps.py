@@ -5,7 +5,7 @@ from core.settings import settings
 
 
 API_KEY_NAME = "X-API-Key"
-API_KEY = settings.auth.secret_key
+API_KEY = settings.auth.secret_key.get_secret_value()
 
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
@@ -18,7 +18,6 @@ async def verify_api_key(
             status_code=401,
             detail="API Key is required. Please provide X-API-Key header",
         )
-
     if api_key != API_KEY:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -1,14 +1,18 @@
-from __future__ import annotations
+# from __future__ import annotations
 
 import time
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import Annotated, Any
 
 import pandas as pd
 
 from fastapi import Depends
-from sqlalchemy import delete, select, text, update
+
+# if TYPE_CHECKING:
+from pandas import DataFrame
+from sqlalchemy import Engine, delete, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions.database import DatabaseLoadError
 from core.exceptions.file import CsvParsingError, FileAppNotFoundError
@@ -17,14 +21,8 @@ from db.postgres import get_session_generator, run_sync_db_operation
 from models.supplier_models import SupplierProductCode
 
 
-if TYPE_CHECKING:
-    from pandas import DataFrame
-    from sqlalchemy import Engine
-    from sqlalchemy.ext.asyncio import AsyncSession
-
-
 # ===== Константы =====
-DEFAULT_CHUNKSIZE: int = 10000
+DEFAULT_CHUNKSIZE: int = 5000
 COMMON_ENCODINGS: tuple[str, ...] = (
     "utf-8",
     "cp1251",
@@ -149,7 +147,7 @@ class SupplierProductCodeRepository:
             rows_loaded = self._load_dataframe_to_db(
                 df, sync_engine, chunksize
             )
-
+            rows_loaded = 0
             processing_time = int((time.time() - start_time) * 1000)
             return {
                 "status": "success",
@@ -218,7 +216,8 @@ class SupplierProductCodeRepository:
                 dtype=str,  # Читаем все как строки для гибкости
                 low_memory=False,  # Для больших файлов
                 quotechar='"',
-                doublequote=True,
+                # quoting=csv.QUOTE_NONE,    # явно отключаем quoting
+                doublequote=False,
                 skipinitialspace=True,
                 na_filter=False,  # Не фильтровать NaN для производительности
             )
@@ -354,6 +353,16 @@ class SupplierProductCodeRepository:
                 "dataframe_columns": len(df.columns),
             },
         )
+        # records = df.to_dict("records")
+        # for rec in records:
+        #     # if not rec.get('id') or not rec.get('code')
+        #          or not rec.get('supplier_id'):
+        #     logger.info(
+        #         f"{rec.get('id')}---{rec.get('code')}---{rec.get('name')}"
+        #         f"---{rec.get('category')}---{rec.get('subcategory')}---"
+        #         f"{rec.get('supplier_id')}"
+        #     )
+        # return 0
         with sync_engine.connect() as conn:
             trans = conn.begin()
             try:
@@ -366,14 +375,28 @@ class SupplierProductCodeRepository:
                 )
 
                 # 2. Вставка данных (method='multi' для ускорения)
-                rows_loaded = df.to_sql(
-                    name="supplier_product_codes",
-                    con=conn,
-                    if_exists="append",
-                    index=False,
-                    method="multi",
-                    chunksize=chunksize,
-                )
+                # rows_loaded = df.to_sql(
+                #     name="supplier_product_codes",
+                #     con=conn,
+                #     if_exists="append",
+                #     index=False,
+                #     method="multi",
+                #     chunksize=chunksize,
+                # )
+
+                rows_loaded = 0
+                for start in range(0, len(df), chunksize):
+                    batch = df.iloc[start : start + chunksize]
+                    batch.to_sql(
+                        name="supplier_product_codes",
+                        con=conn,
+                        if_exists="append",
+                        index=False,
+                        # По одной строке (медленнее, но стабильнее)
+                        method=None,
+                    )
+                    rows_loaded += len(batch)
+
                 trans.commit()
                 logger.debug(
                     "Data inserted",
@@ -395,5 +418,6 @@ class SupplierProductCodeRepository:
 # ===== Dependency =====
 def get_supplier_product_codes_repo(
     session: Annotated[AsyncSession, Depends(get_session_generator)],
+    # session: AsyncSession = Depends(get_session_generator),
 ) -> SupplierProductCodeRepository:
     return SupplierProductCodeRepository(session)

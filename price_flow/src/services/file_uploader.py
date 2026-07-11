@@ -82,7 +82,7 @@ class FileUploader:
         original_name = file.filename or "unknown_upload.zip"
         logger.info(
             "Starting file upload",
-            extra={"filename": original_name, "subpath": save_subpath},
+            extra={"file_name": original_name, "subpath": save_subpath},
         )
 
         # 1. Валидация расширения
@@ -124,7 +124,7 @@ class FileUploader:
             # Ожидаемые ошибки бизнес-логики – логируем и пробрасываем
             logger.warning(
                 "File validation failed",
-                extra={"filename": original_name, "error": str(e)},
+                extra={"file_name": original_name, "error": str(e)},
             )
             await self._safe_remove_file(file_path)
             raise
@@ -133,7 +133,7 @@ class FileUploader:
             # Непредвиденные системные ошибки
             logger.error(
                 "Unexpected error during file upload",
-                extra={"filename": original_name, "error": str(e)},
+                extra={"file_name": original_name, "error": str(e)},
                 exc_info=True,
             )
             await self._safe_remove_file(file_path)
@@ -154,7 +154,7 @@ class FileUploader:
         if not file.filename or not file.filename.lower().endswith(".zip"):
             logger.warning(
                 "Invalid file extension",
-                extra={"filename": file.filename},
+                extra={"file_name": file.filename},
             )
             raise FileNotZipError(
                 path=file.filename or "unknown",

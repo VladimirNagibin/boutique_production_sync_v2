@@ -1,4 +1,11 @@
-from sqlalchemy import Float, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Float,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.postgres import Base
@@ -13,7 +20,7 @@ class CommonFieldsMixin:
     id: Mapped[int] = mapped_column(
         Integer, primary_key=True, autoincrement=True
     )
-    code: Mapped[int] = mapped_column(Integer, nullable=False)
+    code: Mapped[int] = mapped_column(BigInteger, nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     category: Mapped[str | None] = mapped_column(String, nullable=True)
     subcategory: Mapped[str | None] = mapped_column(String, nullable=True)
