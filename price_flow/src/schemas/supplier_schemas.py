@@ -2,7 +2,7 @@ import math
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class SupplierProduct(BaseModel):
@@ -13,6 +13,8 @@ class SupplierProduct(BaseModel):
     code: int
     category: str
     subcategory: str
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SupplierProductPrice(BaseModel):
@@ -33,18 +35,21 @@ class SupplierProductPrice(BaseModel):
 
 class ClothingCodeBase(BaseModel):
     """Базовая схема"""
+
     code: int = Field(..., gt=0, description="Код товара у поставщика")
     name: str = Field(..., min_length=1, description="Наименование товара")
     category: str | None = None
     subcategory: str | None = None
     supplier_id: int = Field(..., gt=0, description="ID поставщика")
-    product_summary: str = Field(..., min_length=1, description="Сводка по товару")
+    product_summary: str = Field(
+        ..., min_length=1, description="Сводка по товару"
+    )
     size: str | None = None
     color: str | None = None
     supplier_code: str | None = None
     description: str | None = None
 
-    @field_validator('name', 'product_summary')
+    @field_validator("name", "product_summary")
     def validate_not_empty(cls, v: str) -> str:
         if not v or not v.strip():
             error_message = "Поле не может быть пустым"
@@ -55,20 +60,21 @@ class ClothingCodeBase(BaseModel):
 class ClothingCodeCreate(ClothingCodeBase):
     """Создание записи"""
 
-    @field_validator('supplier_code', 'description', mode='before')
+    @field_validator("supplier_code", "description", mode="before")
     @classmethod
     def convert_nan_to_none(cls, v: Any) -> Any:
         """Преобразует float('nan') в None перед валидацией."""
         if isinstance(v, float) and math.isnan(v):
             return None
         # Если это строка 'nan' (редко, но бывает), тоже можно преобразовать
-        if isinstance(v, str) and v.lower() == 'nan':
+        if isinstance(v, str) and v.lower() == "nan":
             return None
         return v
 
 
 class ClothingCodeUpdate(BaseModel):
     """Обновление записи (все поля опциональны)"""
+
     code: int | None = Field(None, gt=0)
     name: str | None = Field(None, min_length=1)
     category: str | None = None
@@ -83,6 +89,7 @@ class ClothingCodeUpdate(BaseModel):
 
 class ClothingCodeInDB(ClothingCodeBase):
     """Запись из БД"""
+
     id: int
 
     class Config:
@@ -95,6 +102,7 @@ class ClothingCodeExport(ClothingCodeBase):
 
 class ImportResult(BaseModel):
     """Результат импорта"""
+
     message: str
     total_records: int
     created: int
@@ -106,6 +114,7 @@ class ImportResult(BaseModel):
 
 class BatchOperationResult(BaseModel):
     """Результат массовой операции"""
+
     success: bool
     message: str
     affected_rows: int

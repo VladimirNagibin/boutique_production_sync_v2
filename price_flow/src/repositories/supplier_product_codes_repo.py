@@ -102,6 +102,22 @@ class SupplierProductCodeRepository:
         result = await self._session.execute(stmt)
         return bool(result.rowcount > 0)  # type: ignore[attr-defined]
 
+    async def get_supplier_data(
+        self, supplier_id: int
+    ) -> list[SupplierProductCode]:
+        """Получает данные поставщика из SQLite.
+
+        Args:
+            supplier_id: Идентификатор поставщика
+
+        Returns:
+            list[SupplierProductCode]
+        """
+        stmt = select(SupplierProductCode)
+        stmt = stmt.where(SupplierProductCode.supplier_id == supplier_id)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
     # ----- Массовая загрузка из CSV (синхронная, через pandas) -----
 
     async def load_from_csv_with_truncate(
@@ -146,7 +162,6 @@ class SupplierProductCodeRepository:
             rows_loaded = self._load_dataframe_to_db(
                 df, sync_engine, chunksize
             )
-            rows_loaded = 0
             processing_time = int((time.time() - start_time) * 1000)
             return {
                 "status": "success",
@@ -374,7 +389,6 @@ class SupplierProductCodeRepository:
                     method=self._psql_fast_insert,
                     chunksize=chunksize,
                 )
-
                 trans.commit()
                 logger.debug(
                     "Data inserted",
@@ -390,7 +404,6 @@ class SupplierProductCodeRepository:
                 error_message = f"Database load error: {e}"
                 raise DatabaseLoadError(error_message) from e
             else:
-                # return int(rows_loaded)
                 return rows_loaded if rows_loaded is not None else len(df)
 
     @staticmethod
@@ -422,13 +435,6 @@ class SupplierProductCodeRepository:
             )
         finally:
             cursor.close()
-        # with dbapi_conn.cursor() as cursor:  # type: ignore[attr-defined]
-        #     # Формируем шаблон для вставки
-        #     # table.name и keys берутся из модели, безопасны
-        #     sql = f"INSERT INTO {table.name} ({', '.join(keys)}) VALUES %s"
-        #     execute_values(
-        #         cursor, sql, data_iter, page_size=DEFAULT_CHUNKSIZE
-        #     )
 
 
 # ===== Dependency =====

@@ -18,7 +18,7 @@ from core.exceptions.settings import InvalidSettingsValueError
 
 
 # ===== Константы =====
-DEFAULT_LANSETI_PRICE_SENDER = "user@gmail.com"
+DEFAULT_LANSET_PRICE_SENDER = "user@gmail.com"
 DEFAULT_NULAN_PRICES_URL = "https://disk.yandex.ru/disk"
 DEFAULT_NULAN_API_URL = (
     "https://cloud-api.yandex.net/v1/disk/public/resources"
@@ -30,8 +30,8 @@ class PriceSettings(BaseSettings):
     """Настройки для работы с прайсами."""
 
     # ----- Поля модели -----
-    lanceti_price_sender: str = Field(
-        default=DEFAULT_LANSETI_PRICE_SENDER,
+    lanset_price_sender: str = Field(
+        default=DEFAULT_LANSET_PRICE_SENDER,
         description="Sender lanseti",
     )
     nulan_price_url: str = Field(
@@ -52,7 +52,7 @@ class PriceSettings(BaseSettings):
     )
 
     # ----- Валидаторы -----
-    @field_validator("lanceti_price_sender")
+    @field_validator("lanset_price_sender")
     @classmethod
     def validate_email(cls, v: str) -> str:
         """Проверяет, что адрес электронной почты корректен."""
@@ -60,7 +60,7 @@ class PriceSettings(BaseSettings):
         pattern = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$"
         if not re.match(pattern, v):
             raise InvalidSettingsValueError(
-                field_name="lanceti_price_sender",
+                field_name="lanset_price_sender",
                 value=v,
                 reason=(
                     "Invalid email format. Expected format: user@example.com"

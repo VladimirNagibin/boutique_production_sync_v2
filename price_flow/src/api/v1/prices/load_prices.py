@@ -10,10 +10,10 @@ from fastapi.responses import StreamingResponse
 # from api.deps import verify_api_key
 from schemas.response_schemas import SuccessResponse
 from services.prices.lanseti.price_loader import (
-    PriceLoader as PriceLoaderLancet,
+    PriceLoader as PriceLoaderLanset,
 )
 from services.prices.lanseti.price_loader import (
-    get_price_loader as get_price_loader_lancet,
+    get_price_loader as get_price_loader_lanset,
 )
 from services.prices.nulan.price_loader import PriceLoader as PriceLoaderNulan
 from services.prices.nulan.price_loader import (
@@ -24,18 +24,18 @@ from services.prices.nulan.price_loader import (
 load_prices_router = APIRouter()  # dependencies=[Depends(verify_api_key)])
 
 
-@load_prices_router.post("/load-price-lancet", summary="Load price of Lancet")
-async def load_price(
+@load_prices_router.post("/load-price-lanset", summary="Load price of Lanset")
+async def load_price_lanset(
     # supplier: Annotated[
     #    str, (..., description="supplier")
     # ],
     price_loader: Annotated[
-        PriceLoaderLancet, Depends(get_price_loader_lancet)
+        PriceLoaderLanset, Depends(get_price_loader_lanset)
     ],
 ) -> SuccessResponse:
     upload_result = await price_loader.process_price()
     return SuccessResponse(
-        data=upload_result.model_dump(), message="Price lancet loaded"
+        data=upload_result.model_dump(), message="Price lanset loaded"
     )
 
 
@@ -80,7 +80,7 @@ async def load_codes_nulan(
 ) -> SuccessResponse:
     upload_result = await price_loader.load_products(file)
     return SuccessResponse(
-        data=upload_result.model_dump(), message="Price lancet loaded"
+        data=upload_result.model_dump(), message="Price nulan loaded"
     )
     # await price_loader.upd_table()
     # return SuccessResponse(message="OK")

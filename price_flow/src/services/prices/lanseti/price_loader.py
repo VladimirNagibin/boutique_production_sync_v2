@@ -32,9 +32,10 @@ from core.exceptions.base import BaseAppException
 from core.exceptions.file import FileAppNotFoundError
 from core.logger import logger
 from core.settings import settings
-from repositories.supplier_codes_repo import (
-    SupplierCodesRepo,
-    get_supplier_codes_repo,
+from models.supplier_models import SupplierProductCode
+from repositories.supplier_product_codes_repo import (
+    SupplierProductCodeRepository,
+    get_supplier_product_codes_repo,
 )
 from schemas.converter_schemas import UploadResult
 from services.converter import FileUploader, get_file_uploader
@@ -42,7 +43,7 @@ from services.converter import FileUploader, get_file_uploader
 
 class PriceLoader:
     """
-    Сервис для загрузки и обработки прайс-листов.
+    Сервис для загрузки и обработки прайс-листов Ланцети.
     Поддерживает загрузку из Gmail, поиск в Google Drive и обогащение данных.
     """
 
@@ -51,7 +52,11 @@ class PriceLoader:
     IMAP_HOST: ClassVar[str] = "imap.gmail.com"
     LINK_TRACKER_SUBSTR: ClassVar[str] = "geteml.com/ru/mail_link_tracker"
     DEFAULT_SUPPLIER_ID: ClassVar[int] = 201
-    TARGET_FILENAME: ClassVar[str] = "Нал основной прайс на элитку BY"
+    TARGET_FILENAME: ClassVar[tuple[str, ...]] = (
+        "Нал основной прайс на элитку BY",
+        "Нал основной прайс на элитку KZ",
+        "Нал миниатюры дезодоранты тестеры основной прайс на элитку",
+    )
 
     # Правила для автоматического заполнения
     PRODUCT_NAME_RULES: ClassVar[
@@ -90,10 +95,10 @@ class PriceLoader:
     def __init__(
         self,
         settings: Any,
-        supplier_codes_repo: SupplierCodesRepo,
+        supplier_codes_repo: SupplierProductCodeRepository,
         file_uploader: FileUploader,
         supplier_id: int = DEFAULT_SUPPLIER_ID,
-        target_filename: str = TARGET_FILENAME,
+        target_filename: tuple[str, ...] = TARGET_FILENAME,
     ):
         """
         Инициализация сервиса.
@@ -117,10 +122,6 @@ class PriceLoader:
     async def process_price(
         self,
         output_filename: str | None = None,
-        # target_filename: str = (
-        #     # "Нал миниатюры дезодоранты тестеры основной прайс на элитку"
-        #     "Нал основной прайс на элитку KZ"
-        # ),
     ) -> UploadResult:
         """
         Основной метод:
@@ -142,7 +143,7 @@ class PriceLoader:
 
             # 2. Поиск файла в Google Drive
             logger.info(
-                f"Поиск файла '{self.target_filename}' в Google Drive..."
+                f"Поиск файла '{self.target_filename[0]}' в Google Drive..."
             )
             file_id = await self._find_file_in_drive(
                 drive_link,  # type: ignore[arg-type]
@@ -156,7 +157,7 @@ class PriceLoader:
                 timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
                 output_filename = f"price_{self.supplier_id}_{timestamp}.xlsx"
 
-            output_path = settings.BASE_DIR / Path(
+            output_path = settings.app.base_dir / Path(
                 f"uploads/{output_filename}"
             )
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -199,9 +200,6 @@ class PriceLoader:
         else:
             return upload_result
         finally:
-            # await self._cleanup_temp_files(
-            #     [output_path, enriched_file_path]
-            # )
             await self._cleanup_temp_files([enriched_file_path])
 
     async def _get_latest_drive_link(self) -> str | None:
@@ -239,7 +237,10 @@ class PriceLoader:
         """
         try:
             mail = imaplib.IMAP4_SSL(self.IMAP_HOST)
-            mail.login(self.settings.USER_GMAIL, self.settings.PASS_GMAIL)
+            mail.login(
+                self.settings.email.user_gmail,
+                self.settings.email.pass_gmail,
+            )
 
             mail.select("INBOX")
 
@@ -262,11 +263,6 @@ class PriceLoader:
             for i in range(total_messages, total_messages - scan_limit, -1):
                 message_id = message_ids[i - 1].decode()
 
-                # Получаем заголовок письма для логирования
-                # _, header_data = mail.fetch(
-                #    message_id, '(BODY[HEADER.FIELDS (FROM SUBJECT DATE)])'
-                # )
-
                 # Получаем полное письмо
                 _, msg_data = mail.fetch(message_id, "(RFC822)")
 
@@ -276,7 +272,7 @@ class PriceLoader:
                         sender = msg.get("From", "")
 
                         # Проверяем отправителя
-                        if self.settings.SENDER_PRICE_LANSETI in sender:
+                        if self.settings.price.lanset_price_sender in sender:
                             logger.debug(
                                 "Найдено письмо от искомого отправителя: "
                                 f"{sender}"
@@ -481,7 +477,7 @@ class PriceLoader:
             )
 
     async def _find_file_in_drive(
-        self, folder_link: str, filename: str
+        self, folder_link: str, filenames: tuple[str, ...]
     ) -> str | None:
         """
         Ищет файл в папке Google Drive.
@@ -493,32 +489,35 @@ class PriceLoader:
         Returns:
             str: ID файла или None если не найден
         """
-        try:
-            return await asyncio.to_thread(
-                self._find_file_in_drive_sync, folder_link, filename
-            )
+        for filename in filenames:
+            try:
+                return await asyncio.to_thread(
+                    self._find_file_in_drive_sync, folder_link, filename
+                )
 
-        except HttpError as e:
-            if e.resp.status == 429:
-                raise DriveApiError(
-                    error_code="DRIVE_001",
-                    message="Превышен лимит запросов к Google Drive API",
-                    details=(
+            except HttpError as e:
+                if e.resp.status == 429:
+                    error_code = "DRIVE_001"
+                    message = "Превышен лимит запросов к Google Drive API"
+                    details = (
                         "Попробуйте позже или увеличьте интервалы между "
                         "запросами"
-                    ),
-                ) from e
-            raise DriveApiError(
-                error_code="DRIVE_002",
-                message="Ошибка при работе с Google Drive API",
-                details=str(e),
-            ) from e
-        except Exception as e:
-            raise DriveApiError(
-                error_code="DRIVE_003",
-                message="Ошибка при поиске файла в Google Drive",
-                details=str(e),
-            ) from e
+                    )
+                    error = e
+                error_code = "DRIVE_002"
+                message = "Ошибка при работе с Google Drive API"
+                details = str(e)
+                error = e
+            except Exception as e:  # noqa: BLE001
+                error_code = "DRIVE_003"
+                message = "Ошибка при поиске файла в Google Drive"
+                details = str(e)
+                error = e
+        raise DriveApiError(
+            error_code=error_code,
+            message=message,
+            details=details,
+        ) from error
 
     def _find_file_in_drive_sync(
         self, folder_link: str, filename: str
@@ -547,7 +546,7 @@ class PriceLoader:
             service = build(
                 "drive",
                 "v3",
-                developerKey=self.settings.API_KEY_GOOGLE,
+                developerKey=self.settings.email.api_key_google,
                 cache_discovery=False,
             )
 
@@ -706,19 +705,14 @@ class PriceLoader:
         Асинхронно получает данные поставщика.
 
         Returns:
-            DataFrame с данными поставщика
+            DataFrame с данными поставщика.
         """
         try:
-            supplier_data = await asyncio.to_thread(
-                self.supplier_codes_repo.get_supplier_data, self.supplier_id
+            supplier_data = await self.supplier_codes_repo.get_supplier_data(
+                self.supplier_id
             )
-
             self._validate_supplier_data(supplier_data)
 
-            # Обработка данных
-            supplier_data["code"] = (
-                supplier_data["code"].astype(str).str.strip()
-            )
             logger.info(f"Загружено {len(supplier_data)} записей поставщика")
 
         except SupplierDataError:
@@ -729,10 +723,21 @@ class PriceLoader:
                 details=str(e),
             ) from e
         else:
-            return supplier_data
+            return pd.DataFrame(
+                [
+                    {
+                        "code": item.code,
+                        "category": item.category,
+                        "subcategory": item.subcategory,
+                    }
+                    for item in supplier_data
+                ]
+            )
 
-    def _validate_supplier_data(self, supplier_data: pd.DataFrame) -> None:
-        if supplier_data.empty:
+    def _validate_supplier_data(
+        self, supplier_data: list[SupplierProductCode]
+    ) -> None:
+        if not supplier_data:
             raise SupplierDataError(
                 error_code="EMPTY_SUPPLIER_DATA",
                 message=f"Нет данных для поставщика ID={self.supplier_id}",
@@ -747,7 +752,7 @@ class PriceLoader:
 
         Args:
             file_path: Путь к Excel файлу
-            supplier_data: DataFrame с данными поставщика
+            supplier_data: list[SupplierProduct] с данными поставщика
 
         Returns:
             Path: Путь к обработанному файлу
@@ -1358,7 +1363,8 @@ class PriceLoader:
 def get_price_loader(
     settings: Annotated[Any, Depends(lambda: settings)],
     supplier_codes_repo: Annotated[
-        SupplierCodesRepo, Depends(get_supplier_codes_repo)
+        SupplierProductCodeRepository,
+        Depends(get_supplier_product_codes_repo),
     ],
     file_uploader: Annotated[FileUploader, Depends(get_file_uploader)],
     supplier_id: int = PriceLoader.DEFAULT_SUPPLIER_ID,
