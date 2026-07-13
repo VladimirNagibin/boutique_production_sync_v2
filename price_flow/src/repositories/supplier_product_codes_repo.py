@@ -414,13 +414,21 @@ class SupplierProductCodeRepository:
             пользовательского ввода, поэтому SQL-инъекция невозможна.
         """
         dbapi_conn = conn.connection
-        with dbapi_conn.cursor() as cursor:  # type: ignore[attr-defined]
-            # Формируем шаблон для вставки
-            # table.name и keys берутся из модели, безопасны
+        cursor = dbapi_conn.cursor()
+        try:
             sql = f"INSERT INTO {table.name} ({', '.join(keys)}) VALUES %s"  # noqa: S608
             execute_values(
                 cursor, sql, data_iter, page_size=DEFAULT_CHUNKSIZE
             )
+        finally:
+            cursor.close()
+        # with dbapi_conn.cursor() as cursor:  # type: ignore[attr-defined]
+        #     # Формируем шаблон для вставки
+        #     # table.name и keys берутся из модели, безопасны
+        #     sql = f"INSERT INTO {table.name} ({', '.join(keys)}) VALUES %s"
+        #     execute_values(
+        #         cursor, sql, data_iter, page_size=DEFAULT_CHUNKSIZE
+        #     )
 
 
 # ===== Dependency =====
