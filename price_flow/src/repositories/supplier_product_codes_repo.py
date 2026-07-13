@@ -1,17 +1,16 @@
-# from __future__ import annotations
-
 import time
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Annotated, Any
 
 import pandas as pd
 
 from fastapi import Depends
-
-# if TYPE_CHECKING:
 from pandas import DataFrame
-from sqlalchemy import Engine, delete, select, text, update
+from psycopg2.extras import execute_values
+from sqlalchemy import Engine, Table, delete, select, text, update
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions.database import DatabaseLoadError
@@ -353,16 +352,7 @@ class SupplierProductCodeRepository:
                 "dataframe_columns": len(df.columns),
             },
         )
-        # records = df.to_dict("records")
-        # for rec in records:
-        #     # if not rec.get('id') or not rec.get('code')
-        #          or not rec.get('supplier_id'):
-        #     logger.info(
-        #         f"{rec.get('id')}---{rec.get('code')}---{rec.get('name')}"
-        #         f"---{rec.get('category')}---{rec.get('subcategory')}---"
-        #         f"{rec.get('supplier_id')}"
-        #     )
-        # return 0
+
         with sync_engine.connect() as conn:
             trans = conn.begin()
             try:
@@ -374,28 +364,16 @@ class SupplierProductCodeRepository:
                     )
                 )
 
-                # 2. Вставка данных (method='multi' для ускорения)
-                # rows_loaded = df.to_sql(
-                #     name="supplier_product_codes",
-                #     con=conn,
-                #     if_exists="append",
-                #     index=False,
-                #     method="multi",
-                #     chunksize=chunksize,
-                # )
-
-                rows_loaded = 0
-                for start in range(0, len(df), chunksize):
-                    batch = df.iloc[start : start + chunksize]
-                    batch.to_sql(
-                        name="supplier_product_codes",
-                        con=conn,
-                        if_exists="append",
-                        index=False,
-                        # По одной строке (медленнее, но стабильнее)
-                        method=None,
-                    )
-                    rows_loaded += len(batch)
+                # 2. Вставка данных
+                rows_loaded = df.to_sql(
+                    name="supplier_product_codes",
+                    con=conn,
+                    if_exists="append",
+                    index=False,
+                    # Подключаем бинарную вставку
+                    method=self._psql_fast_insert,
+                    chunksize=chunksize,
+                )
 
                 trans.commit()
                 logger.debug(
@@ -412,7 +390,37 @@ class SupplierProductCodeRepository:
                 error_message = f"Database load error: {e}"
                 raise DatabaseLoadError(error_message) from e
             else:
-                return int(rows_loaded)
+                # return int(rows_loaded)
+                return rows_loaded if rows_loaded is not None else len(df)
+
+    @staticmethod
+    def _psql_fast_insert(
+        table: Table,
+        conn: Connection,
+        keys: list[str],
+        data_iter: Iterable[tuple[Any, ...]],
+    ) -> None:
+        """
+        Вставляет данные через бинарный протокол PostgreSQL (execute_values).
+
+        Аргументы:
+            table: Объект таблицы SQLAlchemy.
+            conn: Соединение с БД.
+            keys: Список имён колонок.
+            data_iter: Итератор кортежей с данными.
+
+        Примечание:
+            Имена таблицы и колонок берутся из модели и не зависят от
+            пользовательского ввода, поэтому SQL-инъекция невозможна.
+        """
+        dbapi_conn = conn.connection
+        with dbapi_conn.cursor() as cursor:  # type: ignore[attr-defined]
+            # Формируем шаблон для вставки
+            # table.name и keys берутся из модели, безопасны
+            sql = f"INSERT INTO {table.name} ({', '.join(keys)}) VALUES %s"  # noqa: S608
+            execute_values(
+                cursor, sql, data_iter, page_size=DEFAULT_CHUNKSIZE
+            )
 
 
 # ===== Dependency =====
