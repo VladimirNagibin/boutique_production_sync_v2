@@ -29,7 +29,7 @@ async def delete_file_async(file_path: str) -> None:
 async def listen_to_redis_events() -> None:
     redis: RedisClient = await get_redis()
     client: ClientRedis = asyncio_redis.from_url(
-        f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}"
+        f"redis://:{settings.REDIS_PASSWORD}@{settings.REDIS_HOST}:{settings.REDIS_PORT}"
     )
     pubsub: PubSub = client.pubsub()
 

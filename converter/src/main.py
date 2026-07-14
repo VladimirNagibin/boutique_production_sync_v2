@@ -20,7 +20,11 @@ scheduler = AsyncIOScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    redis_client.redis = Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT)
+    redis_client.redis = Redis(
+        host=settings.REDIS_HOST,
+        port=settings.REDIS_PORT,
+        password=settings.REDIS_PASSWORD,
+    )
     task = asyncio.create_task(listen_to_redis_events())
     scheduler.add_job(
         clear_files,

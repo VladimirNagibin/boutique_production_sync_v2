@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     APP_RELOAD: bool = True
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
+    REDIS_PASSWORD: str = "pass"
     UPLOAD_DIR: str = os.path.join("data", "upload")
     TTL: int = 60 * 60 * 6  # TTL in seconds
     CHUNK: int = 1024

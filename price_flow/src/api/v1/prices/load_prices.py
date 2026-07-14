@@ -26,9 +26,6 @@ load_prices_router = APIRouter()  # dependencies=[Depends(verify_api_key)])
 
 @load_prices_router.post("/load-price-lanset", summary="Load price of Lanset")
 async def load_price_lanset(
-    # supplier: Annotated[
-    #    str, (..., description="supplier")
-    # ],
     price_loader: Annotated[
         PriceLoaderLanset, Depends(get_price_loader_lanset)
     ],

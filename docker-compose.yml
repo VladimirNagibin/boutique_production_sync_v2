@@ -63,7 +63,7 @@ services:
     image: redis:7-alpine
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
-    command: redis-server --requirepass ${REDIS_PASSWORD} --save 60 1 --appendonly yes
+    command: redis-server --requirepass ${REDIS_PASSWORD} --save 60 1 --appendonly yes --notify-keyspace-events AKE
     volumes:
       - redis-data:/data
     healthcheck:
