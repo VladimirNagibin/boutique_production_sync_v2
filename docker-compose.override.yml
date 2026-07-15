@@ -23,6 +23,14 @@ services:
       - ./.env.price_flow
     working_dir: /app/src
 
+  upd_sites:
+    volumes:
+      - ./updating_sites/src:/opt/app
+    env_file:
+      - .env.upd_sites
+    ports:
+     - 8080:8000
+
   db:
     ports:
      - 5442:5432

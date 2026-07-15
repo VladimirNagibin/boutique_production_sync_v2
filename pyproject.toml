@@ -11,16 +11,17 @@ ignore_missing_imports = false
 
 # Явные базовые пути — ключевая настройка для монорепозитория
 explicit_package_bases = true
-mypy_path = "price_flow/src:converter/src"
+mypy_path = "price_flow/src:converter/src:updating_sites/src"
 namespace_packages = true
 
 # Пути к исходникам для проверки
-files = ["price_flow/src", "converter/src"]
+files = ["price_flow/src", "converter/src", "updating_sites/src"]
 
 # Исключаем миграции Alembic и сгенерированный код
 exclude = [
     "^price_flow/src/migrations/.*",
     "^converter/src/migrations/.*",
+    "^updating_sites/src/migrations/.*",
     "^.*alembic/.*",
 ]
 

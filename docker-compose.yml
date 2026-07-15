@@ -59,6 +59,11 @@ services:
       context: ./converter
       dockerfile: Dockerfile
 
+  upd_sites:
+    build:
+      context: ./updating_sites
+      dockerfile: Dockerfile
+
   redis:
     image: redis:7-alpine
     environment:

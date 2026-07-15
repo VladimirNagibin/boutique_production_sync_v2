@@ -17,6 +17,8 @@ from services.tasks import clear_files, listen_to_redis_events
 
 scheduler = AsyncIOScheduler()
 
+INTERVAL_TRIGGER = 60
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -28,7 +30,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     task = asyncio.create_task(listen_to_redis_events())
     scheduler.add_job(
         clear_files,
-        trigger=IntervalTrigger(minutes=60),
+        trigger=IntervalTrigger(minutes=INTERVAL_TRIGGER),
         id="clear_files",
         replace_existing=True,
     )

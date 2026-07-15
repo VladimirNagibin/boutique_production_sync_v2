@@ -194,6 +194,7 @@ files = ["src"]
 # ИСКЛЮЧАЕМ другие проекты монорепозитория
 exclude = [
     "^converter/.*",
+    "^updating_sites/.*",
     "^src/migrations/.*",
     "^migrations/.*",
     "tests/",

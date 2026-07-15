@@ -2,9 +2,10 @@ import os
 from typing import Any, Awaitable, Callable
 
 import aiofiles.os as aios
-import redis.asyncio as asyncio_redis
+
+# import redis.asyncio as asyncio_redis
 from redis.asyncio.client import PubSub
-from redis.asyncio.client import Redis as ClientRedis
+# from redis.asyncio.client import Redis as ClientRedis
 
 from core.logger import logger
 from core.settings import settings
@@ -16,42 +17,62 @@ async def delete_file_async(file_path: str) -> None:
     try:
         # Проверяем, существует ли файл
         if not await aios.path.exists(file_path):
-            print(f"Файл {file_path} не найден")
+            logger.warning(f"Файл {file_path} не найден")
             return
 
         # Асинхронное удаление файла
         await aios.remove(file_path)
-        print(f"Файл {file_path} успешно удален")
+        logger.debug(f"Файл {file_path} успешно удален")
     except Exception as e:
-        print(f"Ошибка при удалении файла {file_path}: {e}")
+        logger.error(f"Ошибка при удалении файла {file_path}: {e}")
 
 
 async def listen_to_redis_events() -> None:
-    redis: RedisClient = await get_redis()
-    client: ClientRedis = asyncio_redis.from_url(
-        f"redis://:{settings.REDIS_PASSWORD}@{settings.REDIS_HOST}:{settings.REDIS_PORT}"
-    )
-    pubsub: PubSub = client.pubsub()
+    redis_client: RedisClient = await get_redis()
+    if not redis_client.redis:
+        logger.error("Redis не инициализирован для listen_to_redis_events")
+        return
+    # client: ClientRedis = asyncio_redis.from_url(
+    #     f"redis://:{settings.REDIS_PASSWORD}@{settings.REDIS_HOST}:{settings.REDIS_PORT}"
+    # )
+    pubsub: PubSub = redis_client.redis.pubsub()
 
     await pubsub.psubscribe("__keyevent@0__:set", "__keyevent@0__:expired")
+    logger.info("Слушатель событий Redis запущен...")
 
-    while True:
-        message = await pubsub.get_message()
-        if message and message["type"] == "pmessage":
-            channel = message["channel"].decode("utf-8")
-            key = message["data"].decode("utf-8")
-            file_path = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "%s", key)
-            try:
-                value = await redis.get(name=key)
-                value = int(value.decode("utf-8"))
-            except Exception:
-                value = None
-            if channel == "__keyevent@0__:set" and value == settings.LOAD:
-                await convert_xlsx_to_xls(key)
-                await redis.set(name=key, value=settings.CONVERTED, ex=settings.TTL)
-                await delete_file_async(file_path % ("in"))
-            elif channel == "__keyevent@0__:expired":
-                await delete_file_async(file_path % ("out"))
+    async for message in pubsub.listen():
+        try:
+            if message["type"] == "pmessage":
+                channel = message["channel"].decode("utf-8")
+                key = message["data"].decode("utf-8")
+
+                # ИСПРАВЛЕНИЕ: Убрали сложное форматирование через %s
+                in_path = os.path.join(
+                    settings.BASE_DIR, settings.UPLOAD_DIR, "in", key
+                )
+                out_path = os.path.join(
+                    settings.BASE_DIR, settings.UPLOAD_DIR, "out", key
+                )
+
+                if channel == "__keyevent@0__:set":
+                    value = await redis_client.get(name=key)
+                    if value and int(value.decode("utf-8")) == settings.LOAD:
+                        logger.info(f"Обнаружен файл на конвертацию: {key}")
+                        await convert_xlsx_to_xls(key)
+                        await redis_client.set(
+                            name=key,
+                            value=settings.CONVERTED,
+                            ex=settings.TTL,
+                        )
+                        await delete_file_async(in_path)
+
+                elif channel == "__keyevent@0__:expired":
+                    logger.debug(
+                        f"Истек срок жизни ключа (файл готов к выдаче/удалению): {key}"
+                    )
+                    await delete_file_async(out_path)
+        except Exception as e:
+            logger.error(f"Ошибка в цикле обработки событий Redis: {e}", exc_info=True)
 
 
 async def delete_files_by_condition(
@@ -67,6 +88,9 @@ async def delete_files_by_condition(
     которая принимает имя файла и возвращает bool.
     """
     try:
+        if not await aios.path.exists(folder_path):
+            return
+
         # Получаем список файлов в папке
         files = await aios.listdir(folder_path)
 
@@ -77,19 +101,20 @@ async def delete_files_by_condition(
             # Проверяем, является ли объект файлом
             if await aios.path.isfile(file_path):
                 # Проверяем условие
-                if condition(file_name):
-                    print(f"Удаление файла: {file_path}")
+                if not await condition(file_name):
+                    logger.debug(f"Удаление файла: {file_path}")
                     await aios.remove(file_path)
     except Exception as e:
-        print(f"Ошибка при обработке файлов: {e}")
+        logger.error(f"Ошибка при очистке файлов в {folder_path}: {e}")
 
 
 async def clear_files() -> None:
     logger.info("start clear files")
     redis: RedisClient = await get_redis()
-    file_path = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "%s")
+    in_dir = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "in")
+    out_dir = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "out")
 
-    await delete_files_by_condition(file_path % ("in"), redis.exists)
-    await delete_files_by_condition(file_path % ("out"), redis.exists)
+    await delete_files_by_condition(in_dir, lambda f: redis.exists(f))
+    await delete_files_by_condition(out_dir, lambda f: redis.exists(f))
 
     logger.info("finish clear files")

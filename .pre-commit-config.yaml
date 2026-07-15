@@ -86,3 +86,28 @@ repos:
           - redis>=7.0
           - httpx
           - aiofiles
+
+      - id: mypy
+        name: mypy-upd_sites
+        # ВАЖНО: не передаём файлы по одному — mypy должен проверять проект целиком
+        pass_filenames: false
+        # Указываем корневой конфиг, где настроены пути и плагины
+        args:
+          - --config-file=updating_sites/pyproject.toml
+          - updating_sites/src
+        #  - --config-file=pyproject.toml
+        #  - --explicit-package-bases
+        files: ^updating_sites/
+        additional_dependencies:
+          # Типы для внешних библиотек
+          - types-requests
+          - types-python-dateutil
+          - types-aiofiles
+          # Основные зависимости проекта
+          - pydantic>=2.6
+          - pydantic-settings>=2.6
+          - sqlalchemy>=2.0
+          - fastapi>=0.135
+          - redis>=7.0
+          - httpx
+          - aiofiles
