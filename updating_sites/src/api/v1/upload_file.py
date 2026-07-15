@@ -1,8 +1,8 @@
 import os
 from http import HTTPStatus
 
-from fastapi import APIRouter, File, HTTPException, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, File, HTTPException, UploadFile  # , Response
+from fastapi.responses import Response, JSONResponse, FileResponse
 
 from core.settings import settings
 from services.helper import decode_val
@@ -43,9 +43,12 @@ def upload_file(
     "/export",
     summary="export file",
     description="Export file by the path.",
+    response_model=None,
 )
-async def export_file(response: Response, file: str) -> dict[str, str] | FileResponse:
+async def export_file(response: Response, file: str) -> Response:
     if not os.path.exists(os.path.join(settings.base_dir, file)):
-        response.status_code = HTTPStatus.BAD_REQUEST
-        return {"error": "File not found"}
+        # response.status_code = HTTPStatus.BAD_REQUEST
+        return JSONResponse(
+            status_code=HTTPStatus.BAD_REQUEST, content={"error": "File not found"}
+        )
     return FileResponse(file, filename=file.rsplit("/")[-1])
