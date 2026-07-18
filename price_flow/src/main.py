@@ -15,9 +15,9 @@ from admin.admin_models import register_models
 from admin.authenticate import BasicAuthBackend
 from api.health_checker import health_router
 from api.v1.v1_router import v1_router
-from core.exceptions.base import BaseAppException
-from core.exceptions.enums import ErrorCode
-from core.logger import logger
+from common.exceptions.base import BaseAppException
+from common.exceptions.enums import ErrorCode
+from common.logger import logger
 from core.settings import settings
 from db.postgres import db_manager
 

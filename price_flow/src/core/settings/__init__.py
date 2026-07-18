@@ -5,7 +5,7 @@ from typing import Final
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from core.exceptions.settings import (
+from common.exceptions.settings import (
     InvalidSettingsValueError,
     ProductionSettingsError,
     SettingsLoadError,

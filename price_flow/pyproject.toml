@@ -309,3 +309,7 @@ format-check = "ruff format --check ."
 pre-commit = "pre-commit run --all-files"
 ci = "ruff check . && mypy . && pytest --cov=src --cov-report=term"
 ruff-fix = "ruff check . --fix && mypy . --fix"
+
+
+[tool.uv.sources]
+boutique-common = { workspace = true } # <-- Указываем uv брать его из worksp

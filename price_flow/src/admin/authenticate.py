@@ -8,8 +8,8 @@ from jose.exceptions import JWTError
 # from pydantic import SecretStr
 from sqladmin.authentication import AuthenticationBackend
 
-from core.exceptions.auth import TokenCreationError
-from core.logger import logger
+from common.exceptions.auth import TokenCreationError
+from common.logger import logger
 from core.settings import settings
 
 
@@ -243,6 +243,7 @@ class BasicAuthBackend(AuthenticationBackend):  # type: ignore
                 exc_info=True,
             )
             raise TokenCreationError(
+                error_code="TOKEN_CREATION_ERROR",
                 message="Could not create authentication token",
                 details={"algorithm": self._algorithm},
             ) from e

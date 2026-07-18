@@ -2,6 +2,7 @@ services:
   price_flow:
     volumes:
       - ./price_flow/src:/app/src
+      - ./common:/app/src/common
       # - ./price_flow/config:/app/src/config
     env_file:
       - ./.env.price_flow
@@ -11,6 +12,7 @@ services:
   converter:
     volumes:
       - ./converter/src:/opt/app
+      - ./common:/opt/app/common
     env_file:
       - ./.env.converter
     ports:
@@ -19,6 +21,7 @@ services:
   price_flow-migrations:
     volumes:
       - ./price_flow/src:/app/src
+      - ./common:/app/src/common
     env_file:
       - ./.env.price_flow
     working_dir: /app/src
@@ -26,6 +29,7 @@ services:
   upd_sites:
     volumes:
       - ./updating_sites/src:/opt/app
+      - ./common:/opt/app/common
     env_file:
       - .env.upd_sites
     ports:

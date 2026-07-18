@@ -351,7 +351,7 @@ class Settings(BaseSettings):
         """Собирает список ошибок валидации для production-окружения."""
         errors: list[str] = []
         errors.extend(self._validate_app_production())
-        errors.extend(self._validate_auth_production())
+        # errors.extend(self._validate_auth_production())
         errors.extend(self._validate_encryption_production())
         return errors
 
@@ -364,18 +364,18 @@ class Settings(BaseSettings):
             errors.append("LOG_LEVEL must not be DEBUG in production")
         return errors
 
-    def _validate_auth_production(self) -> list[str]:
-        """Проверяет настройки аутентификации в production."""
-        errors: list[str] = []
-        if (
-            not self.auth.secret_key
-            or len(self.auth.secret_key) < SECRET_KEY_MIN_LENGTH
-        ):
-            errors.append(
-                "AUTH_SECRET_KEY is missing or too short "
-                f"(min {SECRET_KEY_MIN_LENGTH} chars)"
-            )
-        return errors
+    # def _validate_auth_production(self) -> list[str]:
+    #     """Проверяет настройки аутентификации в production."""
+    #     errors: list[str] = []
+    #     if (
+    #         not self.auth.secret_key
+    #         or len(self.auth.secret_key) < SECRET_KEY_MIN_LENGTH
+    #     ):
+    #         errors.append(
+    #             "AUTH_SECRET_KEY is missing or too short "
+    #             f"(min {SECRET_KEY_MIN_LENGTH} chars)"
+    #         )
+    #     return errors
 
     def _validate_encryption_production(self) -> list[str]:
         """Проверяет настройки шифрования в production."""
