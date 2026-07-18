@@ -10,7 +10,7 @@ from typing import Any
 
 import aiosqlite
 
-from core.logger import logger
+from common.logger import logger
 from core.settings import settings
 from interfaces.db.base import IDatabaseManager, ITransactionManager
 

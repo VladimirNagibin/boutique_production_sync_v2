@@ -58,11 +58,19 @@ services:
     build:
       context: .
       dockerfile: converter/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+      seq:
+        condition: service_healthy
 
   upd_sites:
     build:
       context: .
       dockerfile: updating_sites/Dockerfile
+    depends_on:
+      seq:
+        condition: service_healthy
 
   redis:
     image: redis:7-alpine

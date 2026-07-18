@@ -10,14 +10,14 @@ import aiofiles
 
 from fastapi import UploadFile
 
-from core.exceptions.enums import ErrorMessages
-from core.exceptions.file import (
+from common.exceptions.enums import ErrorMessages
+from common.exceptions.file import (
     FileNotZipError,
     FileSystemError,
     FileTooLargeError,
     ZipExtractionError,
 )
-from core.logger import logger
+from common.logger import logger
 from core.settings import settings
 from schemas.response_schemas import SuccessResponse
 
@@ -138,6 +138,7 @@ class FileUploader:
             )
             await self._safe_remove_file(file_path)
             raise FileSystemError(
+                path=file_path,
                 message=ErrorMessages.SAVE_FAILED.message,
                 details={"original_error": str(e)},
             ) from e
@@ -235,6 +236,7 @@ class FileUploader:
                 extra={"path": str(file_path), "error": str(e)},
             )
             raise FileSystemError(
+                path=file_path,
                 message=ErrorMessages.SAVE_FAILED.message,
                 details={"path": str(file_path), "error": str(e)},
             ) from e

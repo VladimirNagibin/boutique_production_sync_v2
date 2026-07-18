@@ -3,8 +3,8 @@ import zipfile
 from pathlib import Path
 from typing import Final
 
-from core.exceptions.file import FileAppNotFoundError, ZipExtractionError
-from core.logger import logger
+from common.exceptions.file import FileAppNotFoundError, ZipExtractionError
+from common.logger import logger
 
 
 # ===== Константы =====

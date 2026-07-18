@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from core.exceptions.settings import InvalidSettingsValueError
+from common.exceptions.settings import InvalidSettingsValueError
 from core.settings.utils import LogLevel
 
 

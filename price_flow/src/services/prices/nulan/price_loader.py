@@ -17,18 +17,18 @@ import requests
 from fastapi import Depends, UploadFile
 from pandas import DataFrame
 
-from core.exceptions.app_exceptions import (
+from common.exceptions.app_exceptions import (
     ApiError,
     DataProcessingError,
     DownloadError,
     ErrorMessages,
 )
-from core.exceptions.file import (
+from common.exceptions.file import (
     FileAppNotFoundError,
     FileUploadError,
     ZipExtractionError,
 )
-from core.logger import logger
+from common.logger import logger
 from core.settings import settings
 from repositories.supplier_clothing_repo import (
     SupplierClothingRepo,

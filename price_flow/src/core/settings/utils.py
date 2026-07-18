@@ -14,7 +14,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from core.exceptions.settings import InvalidSettingsValueError
+from common.exceptions.settings import InvalidSettingsValueError
 
 
 # ===== Перечисление уровней логирования =====

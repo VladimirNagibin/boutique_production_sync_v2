@@ -22,6 +22,8 @@ APScheduler = "3.11.0"
 types-aiofiles = "^24.1.0.20241221"
 pandas-stubs = "^2.2.3.250308"
 types-redis = "^4.6.0.20241004"
+python-json-logger = "4.1.0"
+requests = "2.33.1"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.10.0"

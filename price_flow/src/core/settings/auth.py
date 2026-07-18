@@ -12,7 +12,7 @@ from datetime import timedelta
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from core.exceptions.settings import InvalidSettingsValueError
+from common.exceptions.settings import InvalidSettingsValueError
 
 
 # ===== Константы =====

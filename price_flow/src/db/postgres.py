@@ -22,12 +22,12 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
-from core.exceptions.database import (
+from common.exceptions.database import (
     DatabaseConnectionError,
     DatabaseError,
     DatabaseLoadError,
 )
-from core.logger import logger
+from common.logger import logger
 from core.settings import settings
 
 

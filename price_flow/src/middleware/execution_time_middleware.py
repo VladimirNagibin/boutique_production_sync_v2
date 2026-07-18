@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
-from core.logger import logger
+from common.logger import logger
 
 
 if TYPE_CHECKING:

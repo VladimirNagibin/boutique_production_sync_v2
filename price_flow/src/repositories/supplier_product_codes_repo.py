@@ -13,9 +13,9 @@ from sqlalchemy import Engine, Table, delete, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.exceptions.database import DatabaseLoadError
-from core.exceptions.file import CsvParsingError, FileAppNotFoundError
-from core.logger import logger
+from common.exceptions.database import DatabaseLoadError
+from common.exceptions.file import CsvParsingError, FileAppNotFoundError
+from common.logger import logger
 from db.postgres import get_session_generator, run_sync_db_operation
 from models.supplier_models import SupplierProductCode
 
