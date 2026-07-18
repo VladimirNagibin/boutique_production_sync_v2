@@ -1,0 +1,8 @@
+[project]
+name = "boutique-common"
+version = "0.1.0"
+dependencies = [
+    "pydantic-settings>=2.6.1",
+    "python-json-logger>=4.1.0",
+    "requests>=2.33.1",
+]

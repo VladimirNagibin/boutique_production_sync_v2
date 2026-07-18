@@ -1,57 +1,40 @@
 import abc
-import json
 from functools import lru_cache
 from typing import Any
 
+from tinydb import TinyDB, Query  # type: ignore[import-not-found]
+
+from core.settings import settings
+
 
 class BaseStorage(abc.ABC):
-    """Abstract state storage."""
+    """Абстрактное хранилище состояния."""
 
     @abc.abstractmethod
-    def save_state(self, state: dict[str, Any]) -> None:
-        """Save the state to the storage."""
+    def set_state(self, key: str, value: Any) -> bool:
+        """Save the state for a specific key."""
 
     @abc.abstractmethod
-    def retrieve_state(self) -> dict[str, Any]:
-        """Get the state from the storage."""
+    def get_state(self, key: str, default: Any = None) -> Any:
+        """Get the state for a specific key."""
 
 
-class JsonFileStorage(BaseStorage):
+class TinyDBStorage(BaseStorage):
     """
-    Implementation of a storage using a local file.
-    Storage format: JSON
+    Implementation of a storage using TinyDB.
+    Каждое состояние хранится как отдельный документ {"key": "...", "value": ...}
     """
 
     def __init__(self, file_path: str) -> None:
-        self.file_path = file_path
-
-    def save_state(self, state: dict[str, Any]) -> None:
-        """Save the state to the storage."""
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump(state, f)
-
-    def retrieve_state(self) -> dict[str, Any]:
-        """Get the state from the storage."""
-        try:
-            with open(self.file_path, "r", encoding="utf-8") as f:
-                state = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            state = {}
-        return state  # type: ignore[no-any-return]
-
-
-class State:
-    """Class for working with states."""
-
-    def __init__(self, storage: BaseStorage) -> None:
-        self.storage = storage
+        # TinyDB сам создает файл, если его нет
+        self.db = TinyDB(file_path)
+        self.query = Query()
 
     def set_state(self, key: str, value: Any) -> bool:
-        """Set the state for a key."""
+        """Set the state for a key using upsert."""
         try:
-            state = self.storage.retrieve_state()
-            state[key] = value
-            self.storage.save_state(state)
+            # upsert: если документ с таким ключом есть — обновит, если нет — создаст
+            self.db.upsert({"key": key, "value": value}, self.query.key == key)
             return True
         except Exception:
             return False
@@ -59,12 +42,31 @@ class State:
     def get_state(self, key: str, default: Any = None) -> Any:
         """Get the state for a key."""
         try:
-            state = self.storage.retrieve_state()
-            return state.get(key, default)
+            # Ищем документ по ключу
+            doc = self.db.get(self.query.key == key)
+            return doc["value"] if doc else default
         except Exception:
-            return None
+            return default
+
+
+class State:
+    """Class for working with states."""
+
+    # Теперь этот класс просто проксирует вызовы к хранилищу,
+    # так как вся логика перенесена в TinyDBStorage для максимальной производительности.
+
+    def __init__(self, storage: BaseStorage) -> None:
+        self.storage = storage
+
+    def set_state(self, key: str, value: Any) -> bool:
+        """Set the state for a key."""
+        return self.storage.set_state(key, value)
+
+    def get_state(self, key: str, default: Any = None) -> Any:
+        """Get the state for a key."""
+        return self.storage.get_state(key, default)
 
 
 @lru_cache()
-def get_storage(path: str = "data/storage/storage.json") -> State:
-    return State(JsonFileStorage(path))
+def get_storage(path: str = f"data/storage/{settings.tiny_db_path}") -> State:
+    return State(TinyDBStorage(path))

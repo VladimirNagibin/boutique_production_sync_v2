@@ -43,3 +43,6 @@ module = [
     "python_json_logger.*",
 ]
 ignore_missing_imports = true
+
+[tool.uv.workspace]
+members = ["common", "price_flow", "converter", "updating_sites"]

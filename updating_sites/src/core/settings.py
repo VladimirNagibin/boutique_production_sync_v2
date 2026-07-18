@@ -70,6 +70,7 @@ class Settings(BaseSettings):
 
     PROJECT_NAME: str = "project"
     APP_RELOAD: bool = False
+    ENCRYPTION_KEY: str = "ENCRYPTION_KEY"
 
     host: str = "host"
     login: str = "login"
@@ -100,6 +101,8 @@ class Settings(BaseSettings):
             "/!!! Для скачивания всей папки в архив нажмите Download !!!/",
         ),
     ]
+
+    tiny_db_path: str = "tiny_storage.json"
 
 
 settings = Settings()

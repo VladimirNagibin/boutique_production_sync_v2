@@ -1,8 +1,10 @@
 # Общий этап для копирования файлов зависимостей
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS base
 
+COPY common/ /app/src/common/
+
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
+COPY ./price_flow/pyproject.toml ./price_flow/uv.lock ./
 
 # ---- Продакшен-зависимости (без dev) ----
 FROM base AS prod-deps
@@ -24,10 +26,10 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 COPY --from=prod-deps --chown=appuser:appuser /app/.venv /app/.venv
 
 # Копируем исходный код
-COPY --chown=appuser:appuser src/ ./src/
+COPY --chown=appuser:appuser price_flow/src/ ./src/
 
 # Переменные окружения
-ENV PYTHONPATH=/app/src \
+ENV PYTHONPATH="/app/src:/app/src/common" \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
@@ -58,9 +60,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=dev-deps /app/.venv /app/.venv
 
 # Копируем исходный код (можно переопределить volume для монтирования)
-COPY src/ ./src/
+COPY price_flow/src/ ./src/
 
-ENV PYTHONPATH=/app/src \
+ENV PYTHONPATH="/app/src:/app/src/common" \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 

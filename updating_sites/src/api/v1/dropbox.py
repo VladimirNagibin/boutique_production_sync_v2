@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, Response
 
 from schemas.v1.entity import UpdFilesDropbox
 from services.dropbox_ import DropboxService, get_dropbox
-from services.storage import get_storage, State
 
 dropbox_router = APIRouter()
 
@@ -17,9 +16,8 @@ dropbox_router = APIRouter()
 def check_token(
     response: Response,
     dropbox_service: DropboxService = Depends(get_dropbox),
-    state: State = Depends(get_storage),
 ) -> bool:
-    result = dropbox_service.check_auth_token(state)
+    result = dropbox_service.check_auth_token()
     if not result:
         response.status_code = HTTPStatus.BAD_REQUEST
     return result
@@ -33,9 +31,8 @@ def check_token(
 def upd_token(
     response: Response,
     dropbox_service: DropboxService = Depends(get_dropbox),
-    state: State = Depends(get_storage),
 ) -> int:
-    result = dropbox_service.get_auth_token_by_refresh(state)
+    result = dropbox_service.get_auth_token_by_refresh()
     if result != HTTPStatus.OK:
         response.status_code = result
     return result
@@ -49,9 +46,9 @@ def upd_token(
 def upd_portal_dropbox(
     response: Response,
     dropbox_service: DropboxService = Depends(get_dropbox),
-    state: State = Depends(get_storage),
+    # state: State = Depends(get_storage),
 ) -> list[UpdFilesDropbox]:
-    result = dropbox_service.upd_portal_dropbox(state)
+    result = dropbox_service.upd_portal_dropbox()  # (state)
     if not result or [order["error"] for order in result if order.get("error")]:
         response.status_code = HTTPStatus.BAD_REQUEST
     return [UpdFilesDropbox(**order) for order in result]

@@ -1,8 +1,8 @@
 services:
   price_flow:
     build:
-      context: ./price_flow
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: price_flow/Dockerfile
       target: development
     restart: unless-stopped
     healthcheck:
@@ -21,8 +21,8 @@ services:
 
   price_flow-migrations:
     build:
-      context: ./price_flow
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: price_flow/Dockerfile
       target: development
     restart: no
     depends_on:
@@ -37,8 +37,8 @@ services:
 
   price_flow-test:
     build:
-      context: ./price_flow
-      dockerfile: Dockerfile_tests
+      context: .
+      dockerfile: price_flow/Dockerfile
     restart: no
     profiles: ["test"]
 
@@ -56,13 +56,13 @@ services:
 
   converter:
     build:
-      context: ./converter
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: converter/Dockerfile
 
   upd_sites:
     build:
-      context: ./updating_sites
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: updating_sites/Dockerfile
 
   redis:
     image: redis:7-alpine
