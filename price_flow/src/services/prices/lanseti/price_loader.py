@@ -124,7 +124,7 @@ class PriceLoader:
     async def process_price(
         self,
         output_filename: str | None = None,
-    ) -> UploadResult:
+    ) -> tuple[UploadResult, dict[str, Any]]:
         """
         Основной метод:
         получение ссылки -> поиск файла -> скачивание -> обработка.
@@ -135,7 +135,7 @@ class PriceLoader:
         logger.info("Starting price processing")
         start_time = datetime.now(UTC)
         enriched_file_path: Path | None = None
-
+        details: dict[str, Any] = {}
         try:
             # 1. Получение ссылки из почты
             logger.info("Fetching drive link from email...")
@@ -144,15 +144,18 @@ class PriceLoader:
             logger.info(
                 f"Find link on Google Drive: {drive_link[:50]}..."  # type: ignore[index]
             )
+            details["drive_link"] = drive_link
 
             # 2. Поиск файла в Google Drive
             logger.info(f"Searching for file '{self.target_filename[0]}'...")
-            file_id = await self._find_file_in_drive(
+            file_id, filename = await self._find_file_in_drive(
                 drive_link,  # type: ignore[arg-type]
                 self.target_filename,
             )
             self._validate_file_id(file_id, self.target_filename)  # type: ignore[arg-type]
             logger.info(f"Find file with ID: {file_id}")
+            details["file_id"] = file_id
+            details["filename"] = filename
 
             # 3. Скачивание файла
             if not output_filename:
@@ -166,6 +169,7 @@ class PriceLoader:
 
             logger.info(f"Downloading file to {output_path}")
             await self._download_file(file_id, output_path)  # type: ignore[arg-type]
+            details["output_path"] = output_path
 
             # 4. Получение данных поставщика
             logger.info(f"Loading supplier data (ID={self.supplier_id})...")
@@ -173,9 +177,12 @@ class PriceLoader:
 
             # 5. Обработка Excel файла
             logger.info("Processing Excel file...")
-            enriched_file_path = await self._process_excel_file(
-                output_path, supplier_df
-            )
+            (
+                enriched_file_path,
+                details_process_excel_file,
+            ) = await self._process_excel_file(output_path, supplier_df)
+            details["enriched_file_path"] = enriched_file_path
+            details.update(details_process_excel_file)
 
             # 6. Конвертация
             logger.info("Uploading enriched file...")
@@ -183,6 +190,7 @@ class PriceLoader:
 
             # 7. Статистика
             elapsed = (datetime.now(UTC) - start_time).total_seconds()
+            details["elapsed"] = elapsed
             logger.info(
                 "Price processing completed",
                 extra={
@@ -202,7 +210,7 @@ class PriceLoader:
                 details=str(e),
             ) from e
         else:
-            return upload_result
+            return upload_result, details
         finally:
             if enriched_file_path and enriched_file_path.exists():
                 await self._cleanup_temp_files([enriched_file_path])
@@ -465,7 +473,7 @@ class PriceLoader:
     # ----- Google Drive -----
     async def _find_file_in_drive(
         self, folder_link: str, filenames: tuple[str, ...]
-    ) -> str | None:
+    ) -> tuple[str | None, str | None]:
         """
         Ищет файл в папке Google Drive.
 
@@ -480,7 +488,7 @@ class PriceLoader:
             try:
                 return await asyncio.to_thread(
                     self._find_file_in_drive_sync, folder_link, filename
-                )
+                ), filename
 
             except HttpError as e:
                 if e.resp.status == 429:
@@ -749,7 +757,7 @@ class PriceLoader:
 
     async def _process_excel_file(
         self, file_path: Path, supplier_data: pd.DataFrame
-    ) -> Path:
+    ) -> tuple[Path, dict[str, Any]]:
         """
         Обрабатывает Excel файл: чтение, объединение, обогащение данных.
 
@@ -758,15 +766,18 @@ class PriceLoader:
             supplier_data: list[SupplierProduct] с данными поставщика
 
         Returns:
-            Path: Путь к обработанному файлу
+            tuple[Path, dict[str, Any]]: Кортеж [
+                Путь к обработанному файлу, Словарь со статистикой обработки
+            ]
         """
+        details: dict[str, Any] = {}
         try:
             # 1. Чтение Excel файла
             logger.info("Reading Excel file", extra={"path": str(file_path)})
             excel_df, header_row = await asyncio.to_thread(
                 self._read_excel_with_header, file_path
             )
-
+            details["len_excel"] = len(excel_df)
             logger.info(
                 f"Loaded {len(excel_df)} строк. "
                 f"Header in row: {header_row + 1}"
@@ -775,7 +786,10 @@ class PriceLoader:
             # 2. Объединение данных
             logger.info("Merging with supplier data")
             merged_df = await asyncio.to_thread(
-                self._merge_with_supplier_data, excel_df, supplier_data
+                self._merge_with_supplier_data,
+                excel_df,
+                supplier_data,
+                details,
             )
 
             # 3. Заполнение пропусков
@@ -787,7 +801,7 @@ class PriceLoader:
             # 4. Применение правил обработки
             logger.info("Applying processing rules")
             processed_df = await asyncio.to_thread(
-                self._apply_processing_rules, filled_df
+                self._apply_processing_rules, filled_df, details
             )
 
             # 5. Сохранение результата
@@ -816,7 +830,7 @@ class PriceLoader:
                 details=str(e),
             ) from e
         else:
-            return output_file
+            return output_file, details
 
     # ----- Чтение Excel -----
 
@@ -919,7 +933,10 @@ class PriceLoader:
     # ----- Слияние -----
 
     def _merge_with_supplier_data(
-        self, excel_df: pd.DataFrame, supplier_data: pd.DataFrame
+        self,
+        excel_df: pd.DataFrame,
+        supplier_data: pd.DataFrame,
+        details: dict[str, Any],
     ) -> pd.DataFrame:
         """
         Объединяет данные Excel с данными поставщика.
@@ -953,6 +970,8 @@ class PriceLoader:
                     "percent": match_percentage,
                 },
             )
+            details["matches"] = int(matches)
+            details["percent"] = int(match_percentage)
 
         except Exception as e:
             raise PriceProcessingError(
@@ -977,6 +996,8 @@ class PriceLoader:
         # Добавляем колонки для отслеживания заполнения
         result_df["_filled_by_rule"] = False
         result_df["_filled_by_neighbors"] = False
+        result_df["_is_group"] = False
+        result_df["_not_fill_group"] = False
 
         # 1. Заполнение на основе соседних строк
         # result_df = self._fill_by_neighbors(result_df)
@@ -992,6 +1013,7 @@ class PriceLoader:
         df: pd.DataFrame,
         group_col: str = "category",
         subgroup_col: str = "subcategory",
+        price_col: str = "Цена",
     ) -> pd.DataFrame:
         """
         Заполняет пропущенные значения на основе совпадающих значений выше и
@@ -1008,52 +1030,64 @@ class PriceLoader:
         # Создаем копию чтобы не изменять оригинал
         result_df = df.copy()
 
+        # Сначала обработаем строки с нулевой ценой
+        zero_price_mask = result_df[price_col] == 0
+        result_df.loc[zero_price_mask, group_col] = ""
+        result_df.loc[zero_price_mask, subgroup_col] = ""
+        result_df.loc[zero_price_mask, "_is_group"] = True
+
         # Проходим по всем строкам
         for i in range(len(result_df)):
+            if zero_price_mask.iloc[i]:  # пропускаем уже обработанные
+                continue
+
             # Проверяем, что текущая строка имеет пропуски
             current_group = result_df.at[i, group_col]
             current_subgroup = result_df.at[i, subgroup_col]
 
-            if pd.isna(current_group) or pd.isna(current_subgroup):
-                # Ищем ближайшие заполненные строки выше
-                upper_group = None
-                upper_subgroup = None
-                for j in range(i - 1, -1, -1):
-                    if not pd.isna(
-                        result_df.at[j, group_col]
-                    ) and not pd.isna(result_df.at[j, subgroup_col]):
-                        upper_group = result_df.at[j, group_col]
-                        upper_subgroup = result_df.at[j, subgroup_col]
-                        break
+            # Если оба не NaN, пропускаем
+            if not pd.isna(current_group) and not pd.isna(current_subgroup):
+                continue
 
-                # Ищем ближайшие заполненные строки ниже
-                lower_group = None
-                lower_subgroup = None
-                for j in range(i + 1, len(result_df)):
-                    if not pd.isna(
-                        result_df.at[j, group_col]
-                    ) and not pd.isna(result_df.at[j, subgroup_col]):
-                        lower_group = result_df.at[j, group_col]
-                        lower_subgroup = result_df.at[j, subgroup_col]
-                        break
-
-                # Если значения сверху и снизу совпадают и не None
-                if (
-                    upper_group is not None
-                    and lower_group is not None
-                    and upper_group == lower_group
-                    and upper_subgroup == lower_subgroup
+            # Ищем ближайшие заполненные строки выше
+            upper_group = upper_subgroup = None
+            for j in range(i - 1, -1, -1):
+                if not pd.isna(result_df.at[j, group_col]) and not pd.isna(
+                    result_df.at[j, subgroup_col]
                 ):
-                    # Заполняем пропуски
-                    if pd.isna(current_group):
-                        result_df.at[i, group_col] = upper_group
-                        result_df.at[i, "_filled_by_neighbors"] = True
-                        # result_df.at[i, '_group_filled'] = True
+                    upper_group = result_df.at[j, group_col]
+                    upper_subgroup = result_df.at[j, subgroup_col]
+                    break
 
-                    if pd.isna(current_subgroup):
-                        result_df.at[i, subgroup_col] = upper_subgroup
-                        result_df.at[i, "_filled_by_neighbors"] = True
-                        # result_df.at[i, '_subgroup_filled'] = True
+            # Ищем ближайшие заполненные строки ниже
+            lower_group = lower_subgroup = None
+            for j in range(i + 1, len(result_df)):
+                if not pd.isna(result_df.at[j, group_col]) and not pd.isna(
+                    result_df.at[j, subgroup_col]
+                ):
+                    lower_group = result_df.at[j, group_col]
+                    lower_subgroup = result_df.at[j, subgroup_col]
+                    break
+
+            # Если значения сверху и снизу совпадают и не None
+            if (
+                upper_group is not None
+                and lower_group is not None
+                and upper_group == lower_group
+                and upper_subgroup == lower_subgroup
+            ):
+                # Заполняем пропуски
+                if pd.isna(current_group):
+                    result_df.at[i, group_col] = upper_group
+                    result_df.at[i, "_filled_by_neighbors"] = True
+                    # result_df.at[i, '_group_filled'] = True
+
+                if pd.isna(current_subgroup):
+                    result_df.at[i, subgroup_col] = upper_subgroup
+                    result_df.at[i, "_filled_by_neighbors"] = True
+                    # result_df.at[i, '_subgroup_filled'] = True
+            else:
+                result_df.at[i, "_not_fill_group"] = True
 
         return result_df
 
@@ -1072,6 +1106,7 @@ class PriceLoader:
                         result_df.at[idx, "category"] = group
                         result_df.at[idx, "subcategory"] = subgroup
                         result_df.at[idx, "_filled_by_rule"] = True
+                        result_df.at[idx, "_not_fill_group"] = False
                         break
 
         return result_df
@@ -1144,7 +1179,9 @@ class PriceLoader:
 
     # ----- Применение правил -----
 
-    def _apply_processing_rules(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _apply_processing_rules(
+        self, df: pd.DataFrame, details: dict[str, Any]
+    ) -> pd.DataFrame:
         """
         Применяет финальные правила обработки к данным.
         """
@@ -1155,15 +1192,28 @@ class PriceLoader:
             # Можно сохранить статистику перед удалением
             filled_by_rule = result_df["_filled_by_rule"].sum()
             filled_by_neighbors = result_df["_filled_by_neighbors"].sum()
+            groups_count = result_df["_is_group"].sum()
+            not_fill_group = result_df["_not_fill_group"].sum()
 
             logger.debug(
                 f"Field by rules: {filled_by_rule}, "
-                f"neighbors: {filled_by_neighbors}"
+                f"neighbors: {filled_by_neighbors}, "
+                f"groups count: {groups_count}, "
+                f"not fill group: {not_fill_group}, "
             )
+            details["filled_by_rule"] = int(filled_by_rule)
+            details["filled_by_neighbors"] = int(filled_by_neighbors)
+            details["groups_count"] = int(groups_count)
+            details["not_fill_group"] = int(not_fill_group)
 
             # Удаляем временные колонки
             result_df = result_df.drop(
-                columns=["_filled_by_rule", "_filled_by_neighbors"]
+                columns=[
+                    "_filled_by_rule",
+                    "_filled_by_neighbors",
+                    "_is_group",
+                    # "_not_fill_group",
+                ]
             )
 
         return result_df
@@ -1208,16 +1258,21 @@ class PriceLoader:
             # Находим позицию для вставки новых колонок
             # (после колонки "Сумма" или последней существующей)
             last_column = ws.max_column
+            last_column = 10
 
-            # Вставляем 2 новые колонки
-            ws.insert_cols(last_column + 1, 2)
+            # Вставляем 3 новые колонки
+            ws.insert_cols(last_column + 1, 3)
 
             # Записываем заголовки новых колонок
             group_col_letter = get_column_letter(last_column + 1)
             subgroup_col_letter = get_column_letter(last_column + 2)
+            not_fill_group_letter = get_column_letter(last_column + 3)
 
             ws[f"{group_col_letter}{header_row + 1}"] = "Группа товара"
             ws[f"{subgroup_col_letter}{header_row + 1}"] = "Подгруппа"
+            ws[f"{not_fill_group_letter}{header_row + 1}"] = (
+                "Не заполнена группа"
+            )
 
             # Записываем данные
             for idx, row in df.iterrows():
@@ -1232,6 +1287,11 @@ class PriceLoader:
                 subgroup_value = row.get("subcategory")
                 if pd.notna(subgroup_value):
                     ws[f"{subgroup_col_letter}{excel_row}"] = subgroup_value
+
+                # Записываем признак заполненности
+                not_fill_group = row.get("_not_fill_group")
+                if not_fill_group:
+                    ws[f"{not_fill_group_letter}{excel_row}"] = not_fill_group
 
             # Сохраняем
             wb.save(output_file)

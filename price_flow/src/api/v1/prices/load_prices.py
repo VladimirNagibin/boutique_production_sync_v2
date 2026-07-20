@@ -30,9 +30,11 @@ async def load_price_lanset(
         PriceLoaderLanset, Depends(get_price_loader_lanset)
     ],
 ) -> SuccessResponse:
-    upload_result = await price_loader.process_price()
+    upload_result, details = await price_loader.process_price()
     return SuccessResponse(
-        data=upload_result.model_dump(), message="Price lanset loaded"
+        data=upload_result.model_dump(),
+        details=details,
+        message="Price lanset loaded",
     )
 
 
