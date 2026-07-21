@@ -16,7 +16,8 @@ db = TinyDB(f"data/storage/{settings.tiny_db_path}")
 
 def _render_row(doc: dict[str, Any]) -> str:
     """Вспомогательная функция для генерации HTML одной строки таблицы."""
-    doc_id = doc.get("doc_id", "")
+    doc_id = doc.doc_id  # type: ignore[attr-defined]
+
     # ОБЯЗАТЕЛЬНО экранируем данные, чтобы кавычки не сломали HTML
     key = html.escape(str(doc.get("key", "")))
     value = html.escape(str(doc.get("value", "")))
