@@ -1,0 +1,43 @@
+name: boutique_production_sync workflow
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+
+  build_and_push_to_docker_hub:
+    name: Push Docker images to DockerHub
+    runs-on: ubuntu-latest
+    #needs:
+    #  - tests
+    #  - lint
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Login to Docker
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Push converter to DockerHub
+        uses: docker/build-push-action@v4
+        with:
+          context: ./converter/
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/boutique_converter:latest
+      - name: Push to price_flow to DockerHub
+        uses: docker/build-push-action@v4
+        with:
+          context: ./price_flow/
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/boutique_price_flow:latest
+          target: production
+      - name: Push updating_sites to DockerHub
+        uses: docker/build-push-action@v4
+        with:
+          context: ./updating_sites/
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/boutique_updating_sites:latest
