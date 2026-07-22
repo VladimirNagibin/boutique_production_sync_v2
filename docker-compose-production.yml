@@ -53,7 +53,7 @@ services:
         condition: service_healthy
 
   upd_sites:
-    image: vlnag/updating_sites:latest
+    image: vlnag/boutique_updating_sites:latest
     env_file:
       - ./.env.upd_sites
     volumes:
