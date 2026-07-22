@@ -34,7 +34,7 @@ ENV PYTHONPATH="/app/src:/app/src/common" \
     PATH="/app/.venv/bin:$PATH"
 
 # Создаём лог-директорию
-RUN mkdir -p /app/logs && chown -R appuser:appuser /app
+RUN mkdir -p /app/src/logs && chown -R appuser:appuser /app
 
 USER appuser
 
