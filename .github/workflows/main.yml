@@ -1,4 +1,4 @@
-name: boutique_production_sync workflow
+name: boutique_production_sync
 
 on:
   pull_request:
@@ -9,35 +9,32 @@ jobs:
   build_and_push_to_docker_hub:
     name: Push Docker images to DockerHub
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [converter, price_flow, updating_sites]
     #needs:
     #  - tests
     #  - lint
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v5
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v4
       - name: Login to Docker
-        uses: docker/login-action@v2
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-      - name: Push converter to DockerHub
-        uses: docker/build-push-action@v4
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v7
         with:
-          context: ./converter/
+          context: .
+          file: ./${{ matrix.service }}/Dockerfile
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/boutique_converter:latest
-      - name: Push to price_flow to DockerHub
-        uses: docker/build-push-action@v4
-        with:
-          context: ./price_flow/
-          push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/boutique_price_flow:latest
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/boutique_${{ matrix.service }}:latest
+            ${{ secrets.DOCKER_USERNAME }}/boutique_${{ matrix.service }}:${{ github.sha }}
           target: production
-      - name: Push updating_sites to DockerHub
-        uses: docker/build-push-action@v4
-        with:
-          context: ./updating_sites/
-          push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/boutique_updating_sites:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

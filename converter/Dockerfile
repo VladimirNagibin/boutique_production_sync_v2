@@ -1,4 +1,4 @@
-FROM python:3.11.10-slim-bullseye
+FROM python:3.11.10-slim-bullseye AS base
 
 COPY common/ /opt/app/common/
 
@@ -26,5 +26,7 @@ COPY ./converter/src /opt/app
 RUN mkdir -p /opt/app/data/upload/in /opt/app/data/upload/out
 
 ENV PYTHONPATH="/opt/app:/opt/app/common"
+
+FROM base AS production
 
 ENTRYPOINT ["python3", "/opt/app/main.py"]

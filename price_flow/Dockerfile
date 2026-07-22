@@ -8,7 +8,7 @@ COPY ./price_flow/pyproject.toml ./price_flow/uv.lock ./
 
 # ---- Продакшен-зависимости (без dev) ----
 FROM base AS prod-deps
-RUN uv sync --frozen --no-cache --no-dev --no-optional
+RUN uv sync --frozen --no-cache --no-dev
 
 # ---- Dev-зависимости (все, включая инструменты) ----
 FROM base AS dev-deps
@@ -71,6 +71,4 @@ ENV PYTHONPATH="/app/src:/app/src/common" \
 
 EXPOSE 8000
 
-# Для разработки можно запускать с --reload
-# CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 CMD ["python", "/app/src/main.py"]

@@ -1,4 +1,4 @@
-FROM python:3.11.10-slim-bullseye
+FROM python:3.11.10-slim-bullseye AS base
 
 COPY common/ /opt/app/common/
 
@@ -22,5 +22,7 @@ RUN python -m pip install --no-cache-dir poetry==1.8.5 \
 COPY ./updating_sites/src /opt/app
 
 ENV PYTHONPATH="/opt/app:/opt/app/common"
+
+FROM base AS production
 
 ENTRYPOINT ["python3", "/opt/app/main.py"]
