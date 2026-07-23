@@ -5,8 +5,8 @@ services:
       - ./.env.price_flow
     volumes:
       - price-flow-logs-data:/app/src/logs
-    ports:
-     - 8000:8000
+    # ports:
+    #  - 8000:8000
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/health/health', timeout=2).raise_for_status()"]
@@ -44,8 +44,8 @@ services:
     volumes:
       - converter-logs-data:/opt/app/logs
       - converter-data:/opt/app/data
-    ports:
-     - 8090:8000
+    # ports:
+    #  - 8090:8000
     depends_on:
       redis:
         condition: service_healthy
@@ -59,16 +59,27 @@ services:
     volumes:
       - upd-sites-logs-data:/opt/app/logs
       - upd-sites-data:/opt/app/data
-    ports:
-     - 8080:8000
+    # ports:
+    #  - 8080:8000
     depends_on:
       seq:
         condition: service_healthy
 
+  gateway:
+    image: nginx:alpine
+    volumes:
+      - ./infra/nginx.conf:/etc/nginx/templates/default.conf.template
+    # build: ./infra/
+    restart: unless-stopped
+    ports:
+      - 8000:80
+    depends_on:
+      - price_flow
+
   db:
     image: postgres:17.4-bookworm
-    ports:
-     - 5442:5432
+    # ports:
+    #  - 5442:5432
     env_file:
       - ./.env.price_flow
     restart: unless-stopped
@@ -83,8 +94,8 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - 6379:6379
+    # ports:
+    #   - 6379:6379
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
     command: redis-server --requirepass ${REDIS_PASSWORD} --save 60 1 --appendonly yes --notify-keyspace-events AKE
@@ -111,8 +122,8 @@ services:
       - seq-data:/data
     env_file:
       - ./.env.price_flow
-    ports:
-      - "5341:80"
+    # ports:
+    #   - "5341:80"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80"]
       interval: 5s   # Проверять каждые 5 секунд

@@ -1,9 +1,10 @@
 import html
+import json
 
 from typing import Any
 
-from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, File, Request, UploadFile
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from tinydb import TinyDB  # type: ignore[import-not-found]
 
 from core.settings import settings
@@ -103,6 +104,16 @@ async def admin_panel() -> HTMLResponse:
     <body>
         <div class="container">
             <h2>Управление состоянием (TinyDB)</h2>
+
+            <div style="margin: 15px 0; display: flex; gap: 10px;">
+                <a href="/api/v1/tiny/admin/db/export/" download>
+                    <button class="btn" style="background: #28a745; color: white;">Экспорт JSON</button>
+                </a>
+                <form hx-post="/api/v1/tiny/admin/db/import/" hx-target="#table-container" hx-swap="innerHTML" enctype="multipart/form-data">
+                    <input type="file" name="file" accept=".json" required style="display: inline-block; padding: 5px;">
+                    <button type="submit" class="btn" style="background: #007bff; color: white;">Импорт JSON</button>
+                </form>
+            </div>
 
             <!-- Форма добавления новой записи -->
             <form class="add-form" hx-post="/api/v1/tiny/admin/db/add/" hx-target="#table-container" hx-swap="innerHTML" hx-on::after-request="this.reset()">
@@ -246,3 +257,70 @@ async def delete_record(doc_id: int) -> HTMLResponse:
     """Удаляет запись"""
     db.remove(doc_ids=[doc_id])
     return HTMLResponse(content="")
+
+
+@router.get("/export/")
+async def export_data() -> FileResponse:
+    """Экспортирует все данные в JSON-файл"""
+    all_docs = db.all()
+    # Преобразуем в список словарей, добавляя doc_id
+    export_data = [{"doc_id": doc.doc_id, **doc} for doc in all_docs]
+
+    # Временный файл
+    temp_file = "data/storage/tinydb_export.json"
+    with open(temp_file, "w", encoding="utf-8") as f:
+        json.dump(export_data, f, ensure_ascii=False, indent=2)
+
+    return FileResponse(
+        temp_file, media_type="application/json", filename="tinydb_export.json"
+    )
+
+
+@router.post("/import/")
+async def import_data(file: UploadFile = File(...)) -> HTMLResponse:
+    """Импортирует данные из JSON-файла (полная замена)"""
+    # Проверяем расширение и тип
+    if not file.filename.endswith(".json"):  # type: ignore[union-attr]
+        return HTMLResponse(
+            content="<div style='color:red;'>Ошибка: необходимо загрузить JSON-файл</div>",
+            status_code=400,
+        )
+
+    try:
+        content = await file.read()
+        data = json.loads(content.decode("utf-8"))
+
+        if not isinstance(data, list):
+            raise ValueError("Данные должны быть списком объектов")
+
+        # Очищаем таблицу
+        db.truncate()
+
+        # Вставляем новые записи (игнорируем поле doc_id, если оно есть)
+        for item in data:
+            # Убираем doc_id, чтобы TinyDB создал новые ID
+            if "doc_id" in item:
+                del item["doc_id"]
+            # Проверяем, что есть ключи key и value
+            if "key" in item and "value" in item:
+                db.insert({"key": item["key"], "value": item["value"]})
+
+        # После импорта возвращаем обновлённую таблицу (как при добавлении)
+        rows_html = "".join(_render_row(doc) for doc in db.all())
+        table_html = f"""
+        <table>
+            <thead>
+                <tr><th>ID</th><th>Key</th><th>Value</th><th>Действия</th></tr>
+            </thead>
+            <tbody>
+                {rows_html if rows_html else '<tr><td colspan="4" style="text-align:center">Нет данных</td></tr>'}
+            </tbody>
+        </table>
+        """
+        return HTMLResponse(content=table_html)
+
+    except Exception as e:
+        return HTMLResponse(
+            content=f"<div style='color:red;'>Ошибка при импорте: {str(e)}</div>",
+            status_code=400,
+        )
