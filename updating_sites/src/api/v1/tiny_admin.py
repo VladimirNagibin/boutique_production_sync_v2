@@ -142,7 +142,7 @@ async def get_table_data() -> HTMLResponse:
 
 
 @router.post("/add/")
-async def add_record(request: Request) -> RedirectResponse:
+async def add_record(request: Request) -> HTMLResponse:  # RedirectResponse:
     """Обрабатывает добавление новой записи"""
     form = await request.form()
     key = form.get("key")
@@ -150,6 +150,20 @@ async def add_record(request: Request) -> RedirectResponse:
 
     if key and value:
         db.insert({"key": key, "value": value})
+    # Генерируем HTML таблицы заново
+    rows_html = "".join(_render_row(doc) for doc in db.all())
+
+    table_html = f"""
+    <table>
+        <thead>
+            <tr><th>ID</th><th>Key</th><th>Value</th><th>Действия</th></tr>
+        </thead>
+        <tbody>
+            {rows_html if rows_html else '<tr><td colspan="4" style="text-align:center">Нет данных</td></tr>'}
+        </tbody>
+    </table>
+    """
+    return HTMLResponse(content=table_html)
 
     # Возвращаем редирект на HTMX. Это заставит HTMX запросить таблицу заново
     # и заменить её в контейнере, а форма очистится благодаря hx-on::after-request="this.reset()"
@@ -204,7 +218,9 @@ async def get_single_row(doc_id: int) -> HTMLResponse:
 
 
 @router.post("/update/{doc_id}/")
-async def update_record(doc_id: int, request: Request) -> RedirectResponse:
+async def update_record(
+    doc_id: int, request: Request
+) -> HTMLResponse:  # RedirectResponse:
     """Сохраняет отредактированные данные"""
     form = await request.form()
     key = form.get("key")
@@ -212,6 +228,14 @@ async def update_record(doc_id: int, request: Request) -> RedirectResponse:
 
     if key and value:
         db.update({"key": key, "value": value}, doc_ids=[doc_id])
+
+    # Получаем обновлённый документ
+    doc = db.get(doc_id=doc_id)
+    if not doc:
+        return HTMLResponse(content="<tr><td colspan='4'>Не найдено</td></tr>")
+
+    # Возвращаем готовую строку
+    return HTMLResponse(content=_render_row(doc))
 
     # Возвращаем редирект на получение одной строки (превратит форму обратно в текст)
     return RedirectResponse(url=f"/api/v1/tiny/admin/db/row/{doc_id}/", status_code=303)
