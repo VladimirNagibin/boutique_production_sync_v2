@@ -300,7 +300,7 @@ class DropboxService:
     def _delete_dropbox_file(self, dbx: dropbox.Dropbox, dropbox_path: str) -> bool:
         """Удаляет файл в Dropbox."""
         try:
-            # dbx.files_delete_v2(dropbox_path) ==============================
+            dbx.files_delete_v2(dropbox_path)
             logger.info(
                 "File deleted from Dropbox",
                 extra={"path": dropbox_path},
@@ -329,7 +329,7 @@ class DropboxService:
     def _delete_local_file(self, local_path: str) -> bool:
         """Удаляет локальный файл."""
         try:
-            # os.remove(local_path) =====================================
+            os.remove(local_path)
             logger.info(
                 "Local file deleted",
                 extra={"path": local_path},

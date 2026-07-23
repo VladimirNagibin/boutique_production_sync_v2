@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncGenerator
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -21,7 +21,7 @@ INTERVAL_TRIGGER = 60
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     redis_client.redis = Redis(
         host=settings.REDIS_HOST,
         port=settings.REDIS_PORT,
@@ -35,11 +35,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         replace_existing=True,
     )
     scheduler.start()
-    yield
-    await redis_client.redis.close()
-    task.cancel()
-    await task
-    scheduler.shutdown()
+    try:
+        yield  # здесь работает приложение
+    finally:
+        # 1. Сначала отменяем задачу слушателя Redis
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass  # ожидаемое поведение
+
+        # 2. Закрываем соединение Redis
+        await redis_client.redis.close()
+
+        # 3. Останавливаем планировщик
+        scheduler.shutdown()
 
 
 app = FastAPI(
