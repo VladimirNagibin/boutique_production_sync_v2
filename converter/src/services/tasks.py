@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import Any, Awaitable, Callable
 
@@ -28,6 +29,7 @@ async def delete_file_async(file_path: str) -> None:
 
 
 async def listen_to_redis_events() -> None:
+    pubsub: PubSub | None = None
     redis_client: RedisClient = await get_redis()
     if not redis_client.redis:
         logger.error("Redis не инициализирован для listen_to_redis_events")
@@ -35,44 +37,71 @@ async def listen_to_redis_events() -> None:
     # client: ClientRedis = asyncio_redis.from_url(
     #     f"redis://:{settings.REDIS_PASSWORD}@{settings.REDIS_HOST}:{settings.REDIS_PORT}"
     # )
-    pubsub: PubSub = redis_client.redis.pubsub()
+    try:
+        pubsub = redis_client.redis.pubsub()
+        if not pubsub:
+            logger.error("pubsub не определён для listen_to_redis_events")
+            return
+        await pubsub.psubscribe("__keyevent@0__:set", "__keyevent@0__:expired")
+        logger.info("Слушатель событий Redis запущен...")
 
-    await pubsub.psubscribe("__keyevent@0__:set", "__keyevent@0__:expired")
-    logger.info("Слушатель событий Redis запущен...")
+        async for message in pubsub.listen():
+            try:
+                if message["type"] == "pmessage":
+                    channel = message["channel"].decode("utf-8")
+                    key = message["data"].decode("utf-8")
 
-    async for message in pubsub.listen():
-        try:
-            if message["type"] == "pmessage":
-                channel = message["channel"].decode("utf-8")
-                key = message["data"].decode("utf-8")
-
-                # ИСПРАВЛЕНИЕ: Убрали сложное форматирование через %s
-                in_path = os.path.join(
-                    settings.BASE_DIR, settings.UPLOAD_DIR, "in", key
-                )
-                out_path = os.path.join(
-                    settings.BASE_DIR, settings.UPLOAD_DIR, "out", key
-                )
-
-                if channel == "__keyevent@0__:set":
-                    value = await redis_client.get(name=key)
-                    if value and int(value.decode("utf-8")) == settings.LOAD:
-                        logger.info(f"Обнаружен файл на конвертацию: {key}")
-                        await convert_xlsx_to_xls(key)
-                        await redis_client.set(
-                            name=key,
-                            value=settings.CONVERTED,
-                            ex=settings.TTL,
-                        )
-                        await delete_file_async(in_path)
-
-                elif channel == "__keyevent@0__:expired":
-                    logger.debug(
-                        f"Истек срок жизни ключа (файл готов к выдаче/удалению): {key}"
+                    # ИСПРАВЛЕНИЕ: Убрали сложное форматирование через %s
+                    in_path = os.path.join(
+                        settings.BASE_DIR, settings.UPLOAD_DIR, "in", key
                     )
-                    await delete_file_async(out_path)
-        except Exception as e:
-            logger.error(f"Ошибка в цикле обработки событий Redis: {e}", exc_info=True)
+                    out_path = os.path.join(
+                        settings.BASE_DIR, settings.UPLOAD_DIR, "out", key
+                    )
+
+                    if channel == "__keyevent@0__:set":
+                        value = await redis_client.get(name=key)
+                        if value and int(value.decode("utf-8")) == settings.LOAD:
+                            logger.info(f"Обнаружен файл на конвертацию: {key}")
+                            await convert_xlsx_to_xls(key)
+                            await redis_client.set(
+                                name=key,
+                                value=settings.CONVERTED,
+                                ex=settings.TTL,
+                            )
+                            await delete_file_async(in_path)
+
+                    elif channel == "__keyevent@0__:expired":
+                        logger.debug(
+                            f"Истек срок жизни ключа (файл готов к выдаче/удалению): {key}"
+                        )
+                        await delete_file_async(out_path)
+            except Exception as e:
+                logger.error(
+                    f"Ошибка в цикле обработки событий Redis: {e}", exc_info=True
+                )
+
+    except asyncio.CancelledError:
+        # Задача была отменена – корректно закрываем подписку
+        # if pubsub:
+        #     await pubsub.unsubscribe()
+        #     await pubsub.close()
+        # Пробрасываем исключение, чтобы признать отмену
+        raise
+
+    except ConnectionError:
+        # Соединение с Redis закрыто – завершаем задачу без ошибки
+        # (например, если Redis перезапускается или приложение останавливается)
+        pass
+
+    finally:
+        # Дополнительная очистка, если pubsub ещё открыт
+        if pubsub is not None:
+            try:
+                await pubsub.unsubscribe()
+                await pubsub.close()
+            except Exception:
+                pass
 
 
 async def delete_files_by_condition(

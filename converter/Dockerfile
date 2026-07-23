@@ -23,7 +23,7 @@ RUN python -m pip install --no-cache-dir poetry==2.0.1 \
     && rm -rf $(poetry config cache-dir)/{cache,artifacts}
 
 COPY ./converter/src /opt/app
-RUN mkdir -p /opt/app/data/upload/in /opt/app/data/upload/out
+RUN mkdir -p /opt/app/data/upload/in /opt/app/data/upload/out /opt/app/logs
 
 ENV PYTHONPATH="/opt/app:/opt/app/common"
 

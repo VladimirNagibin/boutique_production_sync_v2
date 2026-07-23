@@ -42,6 +42,17 @@ services:
     restart: no
     profiles: ["test"]
 
+  gateway:
+    image: nginx:alpine
+    volumes:
+      - ./infra/nginx.conf:/etc/nginx/templates/default.conf.template
+    # build: ./infra/
+    restart: unless-stopped
+    ports:
+      - 80:80
+    depends_on:
+      - price_flow
+
   db:
     image: postgres:17.4-bookworm
     restart: unless-stopped

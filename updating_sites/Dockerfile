@@ -20,6 +20,13 @@ RUN python -m pip install --no-cache-dir poetry==1.8.5 \
     && rm -rf $(poetry config cache-dir)/{cache,artifacts}
 
 COPY ./updating_sites/src /opt/app
+RUN mkdir -p /opt/app/data/storage \
+             /opt/app/data/upload \
+             /opt/app/data/prices \
+             /opt/app/data/butic \
+             /opt/app/data/ismy \
+             /opt/app/data/ornam \
+             /opt/app/logs
 
 ENV PYTHONPATH="/opt/app:/opt/app/common"
 
