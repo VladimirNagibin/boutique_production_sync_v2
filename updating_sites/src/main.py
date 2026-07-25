@@ -1,5 +1,5 @@
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -15,11 +15,13 @@ from api.v1.upload_file import upload_file_router
 from core.logger import LOGGING
 from core.settings import settings
 from middleware.auth_middleware import AuthMiddleware
+from repositories.tinydb_repo import TinyDBRepository, get_tinydb_repo
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    ...
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    repo: TinyDBRepository = get_tinydb_repo()
+    await repo.ensure_admin_exists()
     yield
     ...
 

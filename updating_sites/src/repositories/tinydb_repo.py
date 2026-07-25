@@ -110,6 +110,41 @@ class TinyDBRepository:
             return str(user[0]["value"])
         return None
 
+    async def ensure_admin_exists(self) -> None:
+        """
+        Проверяет, существует ли пользователь с ролью admin,
+        и создаёт его при необходимости.
+        """
+        admin_email = settings.ADMIN_EMAIL
+        admin_password = settings.ADMIN_PASSWORD
+
+        if not admin_email or not admin_password:
+            logger.warning(
+                "ADMIN_EMAIL или ADMIN_PASSWORD не заданы в .env – пропускаем создание администратора."
+            )
+            return
+
+        try:
+            # Проверяем, существует ли пользователь с таким email
+            db = await self._get_db()
+            User = Query()
+            existing = db.search(User.key == admin_email)
+            if existing:
+                # Если уже есть – ничего не делаем, можно проверить роль (но обычно не нужно)
+                logger.info(f"Администратор {admin_email} уже существует.")
+                return
+
+            # Создаём пользователя с ролью admin
+            success = await self.create_user(
+                username=admin_email, password=admin_password, role="admin"
+            )
+            if success:
+                logger.info(f"Администратор {admin_email} успешно создан.")
+            else:
+                logger.error(f"Не удалось создать администратора {admin_email}.")
+        except Exception as e:
+            logger.error(f"Ошибка при создании администратора: {e}", exc_info=True)
+
 
 def get_tinydb_repo() -> TinyDBRepository:
     """Dependency для получения экземпляра репозитория."""

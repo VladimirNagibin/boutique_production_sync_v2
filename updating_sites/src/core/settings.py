@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     CLIENT_SECRET: str = "CLIENT_SECRET"
     SECRET_KEY: str = "SECRET_KEY"
     ALGORITHM: str = "HS256"
+    ADMIN_EMAIL: str = "a@b.c"
+    ADMIN_PASSWORD: str = "pass"
 
     REFRESH_TOKEN_EXPIRE_DAYS: int = 60
     TOKEN_EXPIRE_MINUTES: int = 30
