@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Gateway</title>
+    <style>
+        /* Стили такие же, как в варианте 1 */
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Единый шлюз API</h1>
+        <p>Выберите сервис для перехода:</p>
+        <div class="grid">
+            <div class="card">
+                <a href="/price/admin/">Админка Price Flow</a>
+                <a href="/price/admin/login">Логин админки Price Flow</a>
+                <p>Управление товарами и поставщиками</p>
+            </div>
+            <div class="card">
+                <a href="/upd/admin/">Админка Upd Sites</a>
+                <p>Управление состояниями (TinyDB)</p>
+            </div>
+            <div class="card">
+                <a href="/seq/">Seq</a>
+                <p>Логирование и мониторинг</p>
+            </div>
+            <div class="card">
+                <a href="/price/api/openapi">Price Flow API</a>
+                <p>REST API для обработки прайсов</p>
+            </div>
+            <div class="card">
+                <a href="/converter/api/openapi">Converter API</a>
+                <p>REST API для сервиса конвертации</p>
+            </div>
+            <div class="card">
+                <a href="/upd/api/openapi">Upd Sites API</a>
+                <p>REST API для обновлений сайтов</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

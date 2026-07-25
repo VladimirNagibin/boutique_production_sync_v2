@@ -1,326 +1,266 @@
+"""
+Административный роутер для управления TinyDB через HTMX.
+"""
+
+from __future__ import annotations
+
 import html
 import json
 
-from typing import Any
+import aiofiles
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.templating import Jinja2Templates
 
-from fastapi import APIRouter, File, Request, UploadFile
-from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
-from tinydb import TinyDB  # type: ignore[import-not-found]
-
+from common.logger import logger
 from core.settings import settings
+from repositories.tinydb_repo import TinyDBRepository, get_tinydb_repo
+
+from .helpers import (
+    _generate_edit_html,
+    _generate_table_html,
+    _get_attention,
+    _get_row,
+    _render_row,
+)
 
 
-router = APIRouter(prefix="/admin/db", tags=["Admin"])
+# ===== Константы =====
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 МБ
+TEMPLATES_DIR = f"{settings.base_dir}/templates"
 
-db = TinyDB(f"data/storage/{settings.tiny_db_path}")
+router = APIRouter(prefix="/admin/db", tags=["admin"])
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-
-def _render_row(doc: dict[str, Any]) -> str:
-    """Вспомогательная функция для генерации HTML одной строки таблицы."""
-    doc_id = doc.doc_id  # type: ignore[attr-defined]
-
-    # ОБЯЗАТЕЛЬНО экранируем данные, чтобы кавычки не сломали HTML
-    key = html.escape(str(doc.get("key", "")))
-    value = html.escape(str(doc.get("value", "")))
-
-    # Обрезаем длинные значения для отображения
-    display_value = (value[:80] + "...") if len(value) > 80 else value
-
-    return f"""
-    <tr>
-        <td>{doc_id}</td>
-        <td><code>{key}</code></td>
-        <td title="{value}">{display_value}</td>
-        <td>
-            <button class="btn btn-edit"
-                    hx-get="/api/v1/tiny/admin/db/edit/{doc_id}/"
-                    hx-target="closest tr"
-                    hx-swap="outerHTML">
-                Ред.
-            </button>
-            <button class="btn btn-del"
-                    hx-delete="/api/v1/tiny/admin/db/delete/{doc_id}/"
-                    hx-target="closest tr"
-                    hx-swap="outerHTML"
-                    onclick="return confirm('Точно удалить?')">
-                Удалить
-            </button>
-        </td>
-    </tr>
-    """
+# ===== Публичные методы (Эндпоинты) / Public Endpoints =====
 
 
 @router.get("/", response_class=HTMLResponse)
-async def admin_panel() -> HTMLResponse:
+async def admin_panel(request: Request) -> HTMLResponse:
     """Главная страница админки"""
-    return HTMLResponse(
-        content="""
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <title>TinyDB Admin</title>
-        <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-        <style>
-            body { font-family: Arial, sans-serif; padding: 20px; background: #f4f4f9; }
-            .container { max-width: 900px; margin: auto; }
-            table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-            th { background-color: #007bff; color: white; }
-            tr:nth-child(even) { background-color: #f9f9f9; }
-            .btn { border: none; padding: 6px 12px; cursor: pointer; border-radius: 4px; margin-right: 5px; color: white;}
-            .btn-edit { background: #ffc107; color: black; }
-            .btn-edit:hover { background: #e0a800; }
-            .btn-del { background: #dc3545; }
-            .btn-del:hover { background: #c82333; }
-            .btn-save { background: #28a745; }
-            .btn-cancel { background: #6c757d; }
-
-            /* Стили для формы добавления */
-            .add-form { background: white; padding: 15px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; display: flex; gap: 10px;}
-            .add-form input { padding: 8px; border: 1px solid #ccc; border-radius: 4px; flex-grow: 1;}
-            .add-form button { padding: 8px 15px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;}
-            .add-form button:hover { background: #0056b3; }
-
-            /* Стили для инлайн-формы редактирования */
-            .edit-form input { width: 100%; padding: 4px; box-sizing: border-box; }
-            .edit-grid {
-                display: grid;
-                grid-template-columns: 50px 1fr 1fr auto;
-                gap: 10px;
-                align-items: center;
-            }
-            .edit-grid input {
-                padding: 6px;
-                border: 1px solid #ccc;
-                border-radius: 4px;
-            }
-            .edit-id {
-                font-weight: bold;
-                color: #666;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h2>Управление состоянием (TinyDB)</h2>
-
-            <div style="margin: 15px 0; display: flex; gap: 10px;">
-                <a href="/api/v1/tiny/admin/db/export/" download>
-                    <button class="btn" style="background: #28a745; color: white;">Экспорт JSON</button>
-                </a>
-                <form hx-post="/api/v1/tiny/admin/db/import/" hx-target="#table-container" hx-swap="innerHTML" enctype="multipart/form-data">
-                    <input type="file" name="file" accept=".json" required style="display: inline-block; padding: 5px;">
-                    <button type="submit" class="btn" style="background: #007bff; color: white;">Импорт JSON</button>
-                </form>
-            </div>
-
-            <!-- Форма добавления новой записи -->
-            <form class="add-form" hx-post="/api/v1/tiny/admin/db/add/" hx-target="#table-container" hx-swap="innerHTML" hx-on::after-request="this.reset()">
-                <input type="text" name="key" placeholder="Ключ (например, my_state)" required>
-                <input type="text" name="value" placeholder="Значение" required>
-                <button type="submit">+ Добавить</button>
-            </form>
-
-            <!-- Контейнер с таблицей -->
-            <div id="table-container" hx-get="/api/v1/tiny/admin/db/table/" hx-trigger="load">
-                Загрузка данных...
-            </div>
-        </div>
-    </body>
-    </html>
-    """
+    return templates.TemplateResponse(
+        "tinydb.html",  # type: ignore[arg-type]
+        {"request": request},  # type: ignore[arg-type]
     )
 
 
 @router.get("/table/", response_class=HTMLResponse)
-async def get_table_data() -> HTMLResponse:
+async def get_table_data(
+    repo: TinyDBRepository = Depends(get_tinydb_repo),
+) -> HTMLResponse:
     """Возвращает всю таблицу (используется при первой загрузке и после добавления)"""
-    rows_html = "".join(_render_row(doc) for doc in db.all())
-
-    return HTMLResponse(
-        content=f"""
-    <table>
-        <thead>
-            <tr><th>ID</th><th>Key</th><th>Value</th><th>Действия</th></tr>
-        </thead>
-        <tbody>
-            {rows_html if rows_html else '<tr><td colspan="4" style="text-align:center">Нет данных</td></tr>'}
-        </tbody>
-    </table>
-    """
-    )
+    docs = await repo.get_all()
+    return HTMLResponse(content=_generate_table_html(docs))
 
 
 @router.post("/add/")
-async def add_record(request: Request) -> HTMLResponse:  # RedirectResponse:
+async def add_record(
+    request: Request, repo: TinyDBRepository = Depends(get_tinydb_repo)
+) -> HTMLResponse:
     """Обрабатывает добавление новой записи"""
-    form = await request.form()
-    key = form.get("key")
-    value = form.get("value")
+    try:
+        form = await request.form()
+        key = str(form.get("key", "")).strip()
+        value = str(form.get("value", "")).strip()
 
-    if key and value:
-        db.insert({"key": key, "value": value})
-    # Генерируем HTML таблицы заново
-    rows_html = "".join(_render_row(doc) for doc in db.all())
+        if not key or not value:
+            raise ValueError("Key and value are required")
 
-    table_html = f"""
-    <table>
-        <thead>
-            <tr><th>ID</th><th>Key</th><th>Value</th><th>Действия</th></tr>
-        </thead>
-        <tbody>
-            {rows_html if rows_html else '<tr><td colspan="4" style="text-align:center">Нет данных</td></tr>'}
-        </tbody>
-    </table>
-    """
-    return HTMLResponse(content=table_html)
+        await repo.insert(key, value)
+        logger.info("Record added successfully", extra={"key": key})
 
-    # Возвращаем редирект на HTMX. Это заставит HTMX запросить таблицу заново
-    # и заменить её в контейнере, а форма очистится благодаря hx-on::after-request="this.reset()"
-    return RedirectResponse(url="/api/v1/tiny/admin/db/table/", status_code=303)
+    except Exception as e:
+        logger.error("Failed to add record", extra={"error": str(e)}, exc_info=True)
+        return HTMLResponse(
+            content=_get_attention(f"Error: {html.escape(str(e))}"),
+            status_code=400,
+        )
+
+    docs = await repo.get_all()
+    return HTMLResponse(content=_generate_table_html(docs))
 
 
 @router.get("/edit/{doc_id}/", response_class=HTMLResponse)
-async def edit_form(doc_id: int) -> HTMLResponse:
+async def edit_form(
+    doc_id: int, repo: TinyDBRepository = Depends(get_tinydb_repo)
+) -> HTMLResponse:
     """Возвращает инлайн-форму для редактирования конкретной строки"""
-    doc = db.get(doc_id=doc_id)
+    doc = await repo.get_by_id(doc_id)
     if not doc:
-        return HTMLResponse(content="<tr><td colspan='4'>Не найдено</td></tr>")
+        return HTMLResponse(content=_get_row("Не найдено"))
 
     # Обратите внимание: здесь мы НЕ экранируем значения, так как они подставляются в value="..."
     # и экранирование сломает ввод кавычек. TinyDB безопасно сохранит их как есть.
     key = str(doc.get("key", ""))
     value = str(doc.get("value", ""))
 
-    return HTMLResponse(
-        content=f"""
-    <tr>
-        <td colspan="4">
-            <form class="edit-form" hx-post="/api/v1/tiny/admin/db/update/{doc_id}/" hx-target="closest tr" hx-swap="outerHTML">
-                <div class="edit-grid">
-                    <span class="edit-id">{doc_id}</span>
-                    <input type="text" name="key" value="{key}" required placeholder="Ключ">
-                    <input type="text" name="value" value="{value}" required placeholder="Значение">
-                    <div>
-                        <button type="submit" class="btn btn-save">Сохранить</button>
-                        <button type="button" class="btn btn-cancel"
-                                hx-get="/admin/db/row/{doc_id}/"
-                                hx-target="closest tr"
-                                hx-swap="outerHTML">
-                            Отмена
-                        </button>
-                    </div>
-                </div>
-            </form>
-        </td>
-    </tr>
-    """
-    )
+    return HTMLResponse(content=_generate_edit_html(doc_id, key, value))
 
 
 @router.get("/row/{doc_id}/", response_class=HTMLResponse)
-async def get_single_row(doc_id: int) -> HTMLResponse:
+async def get_single_row(
+    doc_id: int, repo: TinyDBRepository = Depends(get_tinydb_repo)
+) -> HTMLResponse:
     """Возвращает обычную (не редактируемую) строку. Нужна для кнопки 'Отмена'"""
-    doc = db.get(doc_id=doc_id)
+    doc = await repo.get_by_id(doc_id)
     if not doc:
-        return HTMLResponse(content="<tr><td colspan='4'>Не найдено</td></tr>")
+        return HTMLResponse(content=_get_row("Не найдено"))
     return HTMLResponse(content=_render_row(doc))
 
 
 @router.post("/update/{doc_id}/")
 async def update_record(
-    doc_id: int, request: Request
+    doc_id: int,
+    request: Request,
+    repo: TinyDBRepository = Depends(get_tinydb_repo),
 ) -> HTMLResponse:  # RedirectResponse:
     """Сохраняет отредактированные данные"""
-    form = await request.form()
-    key = form.get("key")
-    value = form.get("value")
+    try:
+        form = await request.form()
+        key = str(form.get("key", "")).strip()
+        value = str(form.get("value", "")).strip()
 
-    if key and value:
-        db.update({"key": key, "value": value}, doc_ids=[doc_id])
+        if not key or not value:
+            raise ValueError("Key and value are required")
 
-    # Получаем обновлённый документ
-    doc = db.get(doc_id=doc_id)
+        success = await repo.update(doc_id, key, value)
+        if not success:
+            raise ValueError("Record not found or not updated")
+
+        logger.info("Record updated successfully", extra={"doc_id": doc_id})
+
+    except Exception as e:
+        logger.error(
+            "Failed to update record",
+            extra={"error": str(e), "doc_id": doc_id},
+            exc_info=True,
+        )
+        return HTMLResponse(
+            content=_get_attention(f"Error: {html.escape(str(e))}"),
+            status_code=400,
+        )
+
+    doc = await repo.get_by_id(doc_id)
     if not doc:
-        return HTMLResponse(content="<tr><td colspan='4'>Не найдено</td></tr>")
+        return HTMLResponse(content=_get_row("Record not found"))
 
-    # Возвращаем готовую строку
     return HTMLResponse(content=_render_row(doc))
-
-    # Возвращаем редирект на получение одной строки (превратит форму обратно в текст)
-    return RedirectResponse(url=f"/api/v1/tiny/admin/db/row/{doc_id}/", status_code=303)
 
 
 @router.delete("/delete/{doc_id}/")
-async def delete_record(doc_id: int) -> HTMLResponse:
+async def delete_record(
+    doc_id: int, repo: TinyDBRepository = Depends(get_tinydb_repo)
+) -> HTMLResponse:
     """Удаляет запись"""
-    db.remove(doc_ids=[doc_id])
+    try:
+        await repo.remove(doc_id)
+        logger.info("Record deleted successfully", extra={"doc_id": doc_id})
+    except Exception as e:
+        logger.error(
+            "Failed to delete record",
+            extra={"error": str(e), "doc_id": doc_id},
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+
     return HTMLResponse(content="")
 
 
 @router.get("/export/")
-async def export_data() -> FileResponse:
+async def export_data(
+    repo: TinyDBRepository = Depends(get_tinydb_repo),
+) -> FileResponse:
     """Экспортирует все данные в JSON-файл"""
-    all_docs = db.all()
-    # Преобразуем в список словарей, добавляя doc_id
-    export_data = [{"doc_id": doc.doc_id, **doc} for doc in all_docs]
+    try:
+        docs = await repo.get_all()
+        export_data = [{"doc_id": doc.get("doc_id"), **doc} for doc in docs]
 
-    # Временный файл
-    temp_file = "data/storage/tinydb_export.json"
-    with open(temp_file, "w", encoding="utf-8") as f:
-        json.dump(export_data, f, ensure_ascii=False, indent=2)
+        temp_file = "data/storage/tinydb_export.json"
 
-    return FileResponse(
-        temp_file, media_type="application/json", filename="tinydb_export.json"
-    )
+        # Асинхронная запись файла для соблюдения strict async
+        async with aiofiles.open(temp_file, "w", encoding="utf-8") as f:
+            await f.write(json.dumps(export_data, ensure_ascii=False, indent=2))
+
+        logger.info("Data exported successfully", extra={"file": temp_file})
+
+        return FileResponse(
+            temp_file,
+            media_type="application/json",
+            filename="tinydb_export.json",
+        )
+    except Exception as e:
+        logger.error("Export failed", extra={"error": str(e)}, exc_info=True)
+        raise HTTPException(status_code=500, detail="Export failed")
 
 
 @router.post("/import/")
-async def import_data(file: UploadFile = File(...)) -> HTMLResponse:
+async def import_data(
+    file: UploadFile = File(...),
+    repo: TinyDBRepository = Depends(get_tinydb_repo),
+) -> HTMLResponse:
     """Импортирует данные из JSON-файла (полная замена)"""
     # Проверяем расширение и тип
-    if not file.filename.endswith(".json"):  # type: ignore[union-attr]
+    if not file.filename or not file.filename.endswith(".json"):
+        logger.warning("Invalid file type uploaded", extra={"file_name": file.filename})
         return HTMLResponse(
-            content="<div style='color:red;'>Ошибка: необходимо загрузить JSON-файл</div>",
+            content=_get_attention("Error: JSON file required"),
             status_code=400,
         )
 
     try:
         content = await file.read()
+        if len(content) > MAX_FILE_SIZE:
+            logger.warning(
+                "Import rejected: file too large", extra={"size": len(content)}
+            )
+            return HTMLResponse(
+                content=(
+                    _get_attention(
+                        "Файл слишком большой "
+                        f"(макс. {MAX_FILE_SIZE // (1024 * 1024)} МБ)"
+                    )
+                ),
+                status_code=413,
+            )
         data = json.loads(content.decode("utf-8"))
 
         if not isinstance(data, list):
-            raise ValueError("Данные должны быть списком объектов")
+            raise ValueError("Data must be a list of objects")
 
-        # Очищаем таблицу
-        db.truncate()
-
-        # Вставляем новые записи (игнорируем поле doc_id, если оно есть)
+        # Строгая валидация схемы перед очисткой БД
         for item in data:
-            # Убираем doc_id, чтобы TinyDB создал новые ID
-            if "doc_id" in item:
-                del item["doc_id"]
-            # Проверяем, что есть ключи key и value
-            if "key" in item and "value" in item:
-                db.insert({"key": item["key"], "value": item["value"]})
+            if not isinstance(item, dict) or "key" not in item or "value" not in item:
+                raise ValueError("Each item must contain 'key' and 'value'")
 
-        # После импорта возвращаем обновлённую таблицу (как при добавлении)
-        rows_html = "".join(_render_row(doc) for doc in db.all())
-        table_html = f"""
-        <table>
-            <thead>
-                <tr><th>ID</th><th>Key</th><th>Value</th><th>Действия</th></tr>
-            </thead>
-            <tbody>
-                {rows_html if rows_html else '<tr><td colspan="4" style="text-align:center">Нет данных</td></tr>'}
-            </tbody>
-        </table>
-        """
-        return HTMLResponse(content=table_html)
+        # Очистка и вставка
+        await repo.truncate()
 
-    except Exception as e:
+        for item in data:
+            await repo.insert(str(item["key"]), str(item["value"]))
+
+        logger.info(
+            "Data imported successfully",
+            extra={"file_name": file.filename, "count": len(data)},
+        )
+
+        docs = await repo.get_all()
+        return HTMLResponse(content=_generate_table_html(docs))
+
+    except json.JSONDecodeError as e:
+        logger.error("Invalid JSON format", extra={"error": str(e)})
         return HTMLResponse(
-            content=f"<div style='color:red;'>Ошибка при импорте: {str(e)}</div>",
+            content=_get_attention("Error: Invalid JSON format"),
             status_code=400,
+        )
+    except ValueError as e:
+        logger.error("Validation error during import", extra={"error": str(e)})
+        return HTMLResponse(
+            content=_get_attention(f"Error: {html.escape(str(e))}"),
+            status_code=400,
+        )
+    except Exception as e:
+        logger.error("Import failed", extra={"error": str(e)}, exc_info=True)
+        return HTMLResponse(
+            content=_get_attention("Internal server error during import"),
+            status_code=500,
         )

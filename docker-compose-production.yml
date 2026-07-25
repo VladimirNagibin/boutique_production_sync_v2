@@ -69,6 +69,7 @@ services:
     image: nginx:alpine
     volumes:
       - ./infra/nginx.conf:/etc/nginx/templates/default.conf.template
+      - ./infra/index.html:/usr/share/nginx/html/index.html
     # build: ./infra/
     restart: unless-stopped
     ports:

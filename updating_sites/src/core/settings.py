@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "project"
     APP_RELOAD: bool = False
     ENCRYPTION_KEY: str = "ENCRYPTION_KEY"
+    CLIENT_SECRET: str = "CLIENT_SECRET"
+    SECRET_KEY: str = "SECRET_KEY"
+    ALGORITHM: str = "HS256"
+
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 60
+    TOKEN_EXPIRE_MINUTES: int = 30
 
     host: str = "host"
     login: str = "login"
