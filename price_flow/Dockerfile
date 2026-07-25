@@ -27,6 +27,7 @@ COPY --from=prod-deps --chown=appuser:appuser /app/.venv /app/.venv
 
 # Копируем исходный код
 COPY --chown=appuser:appuser price_flow/src/ ./src/
+COPY --chown=appuser:appuser common/ ./src/common/
 
 # Переменные окружения
 ENV PYTHONPATH="/app/src:/app/src/common" \
@@ -34,7 +35,7 @@ ENV PYTHONPATH="/app/src:/app/src/common" \
     PATH="/app/.venv/bin:$PATH"
 
 # Создаём лог-директорию
-RUN mkdir -p /app/logs && chown -R appuser:appuser /app
+RUN mkdir -p /app/src/logs && chown -R appuser:appuser /app
 
 USER appuser
 

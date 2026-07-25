@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>TinyDB Admin</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #f4f4f9; }
+        .container { max-width: 900px; margin: auto; }
+        table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        th { background-color: #007bff; color: white; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        .btn { border: none; padding: 6px 12px; cursor: pointer; border-radius: 4px; margin-right: 5px; color: white;}
+        .btn-edit { background: #ffc107; color: black; }
+        .btn-edit:hover { background: #e0a800; }
+        .btn-del { background: #dc3545; }
+        .btn-del:hover { background: #c82333; }
+        .btn-save { background: #28a745; }
+        .btn-cancel { background: #6c757d; }
+
+        /* Стили для формы добавления */
+        .add-form { background: white; padding: 15px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; display: flex; gap: 10px;}
+        .add-form input { padding: 8px; border: 1px solid #ccc; border-radius: 4px; flex-grow: 1;}
+        .add-form button { padding: 8px 15px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;}
+        .add-form button:hover { background: #0056b3; }
+
+        /* Стили для инлайн-формы редактирования */
+        .edit-form input { width: 100%; padding: 4px; box-sizing: border-box; }
+        .edit-grid {
+            display: grid;
+            grid-template-columns: 50px 1fr 1fr auto;
+            gap: 10px;
+            align-items: center;
+        }
+        .edit-grid input {
+            padding: 6px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .edit-id {
+            font-weight: bold;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Заголовок с кнопкой выхода -->
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h2 style="margin: 0;">Управление состоянием (TinyDB)</h2>
+            <button class="btn" style="background: #6c757d; color: white; padding: 8px 20px;"
+                    hx-post="/api/v1/auth/logout"
+                    hx-redirect="/api/v1/auth/login/"
+                    hx-confirm="Вы уверены, что хотите выйти?">
+                Выйти
+            </button>
+        </div>
+
+        <div style="margin: 15px 0; display: flex; gap: 10px;">
+            <a href="/api/v1/tiny/admin/db/export/" download>
+                <button class="btn" style="background: #28a745; color: white;">Экспорт JSON</button>
+            </a>
+            <form hx-post="/api/v1/tiny/admin/db/import/" hx-target="#table-container" hx-swap="innerHTML" enctype="multipart/form-data">
+                <input type="file" name="file" accept=".json" required style="display: inline-block; padding: 5px;">
+                <button type="submit" class="btn" style="background: #007bff; color: white;">Импорт JSON</button>
+            </form>
+        </div>
+
+        <!-- Форма добавления новой записи -->
+        <form class="add-form" hx-post="/api/v1/tiny/admin/db/add/" hx-target="#table-container" hx-swap="innerHTML" hx-on::after-request="this.reset()">
+            <input type="text" name="key" placeholder="Ключ (например, my_state)" required>
+            <input type="text" name="value" placeholder="Значение" required>
+            <button type="submit">+ Добавить</button>
+        </form>
+
+        <!-- Контейнер с таблицей -->
+        <div id="table-container" hx-get="/api/v1/tiny/admin/db/table/" hx-trigger="load">
+            Загрузка данных...
+        </div>
+    </div>
+</body>
+</html>
