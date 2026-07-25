@@ -2,10 +2,11 @@ from http import HTTPStatus
 
 from fastapi import APIRouter, Depends, Response
 
+from api.v1.deps import verify_api_key
 from schemas.v1.entity import UpdFilesDropbox
 from services.dropbox_ import DropboxService, get_dropbox
 
-dropbox_router = APIRouter()
+dropbox_router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 
 @dropbox_router.get(

@@ -66,11 +66,7 @@ services:
         condition: service_healthy
 
   gateway:
-    image: nginx:alpine
-    volumes:
-      - ./infra/nginx.conf:/etc/nginx/templates/default.conf.template
-      - ./infra/index.html:/usr/share/nginx/html/index.html
-    # build: ./infra/
+    image: vlnag/boutique_infra:latest
     restart: unless-stopped
     ports:
       - 8000:80

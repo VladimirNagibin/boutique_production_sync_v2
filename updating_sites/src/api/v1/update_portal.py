@@ -3,10 +3,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Response
 
+from api.v1.deps import verify_api_key
 from services.portals import UpdatingPortalServis, get_portal_service
 from schemas.v1.entity import EtlTable, ExportTable, UpdTable, UpdPortal
 
-upd_portal = APIRouter()
+
+upd_portal = APIRouter(dependencies=[Depends(verify_api_key)])
 
 
 @upd_portal.get("/etl", summary="reload portal", description="Reload portals.")

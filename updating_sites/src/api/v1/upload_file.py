@@ -1,13 +1,14 @@
 import os
 from http import HTTPStatus
 
-from fastapi import APIRouter, File, HTTPException, UploadFile  # , Response
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile  # , Response
 from fastapi.responses import Response, JSONResponse, FileResponse
 
+from api.v1.deps import verify_api_key
 from core.settings import settings
 from services.helper import decode_val
 
-upload_file_router = APIRouter()
+upload_file_router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 
 @upload_file_router.post(

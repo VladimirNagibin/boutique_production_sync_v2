@@ -242,7 +242,7 @@ async def import_data(
             "Data imported successfully",
             extra={"file_name": file.filename, "count": len(data)},
         )
-
+        await repo.ensure_admin_exists()
         docs = await repo.get_all()
         return HTMLResponse(content=_generate_table_html(docs))
 

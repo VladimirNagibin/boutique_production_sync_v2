@@ -3,9 +3,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Response
 
+from api.v1.deps import verify_api_key
 from services.storage import get_storage, State
 
-storage = APIRouter()
+
+storage = APIRouter(dependencies=[Depends(verify_api_key)])
 
 
 @storage.post(
