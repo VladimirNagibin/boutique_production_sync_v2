@@ -22,7 +22,10 @@ class IRepository(Protocol[T, CreateSchema, UpdateSchema]):
         """Get record by ID asynchronously."""
 
     async def get_all(
-        self, skip: int = 0, limit: int = 100, filters: dict[str, Any] | None = None
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        filters: dict[str, Any] | None = None,
     ) -> list[T]:
         """Get all records with pagination and filtering asynchronously."""
         ...

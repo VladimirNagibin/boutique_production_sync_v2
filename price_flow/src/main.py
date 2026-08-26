@@ -124,7 +124,7 @@ def configure_exception_handlers(app: FastAPI) -> None:
         execution_time_ms = float(
             request.headers.get("X-Execution-Time-Ms", 0)
         )
-        status_code = getattr(exc, "status_code", status.HTTP_400_BAD_REQUEST)
+        status_code = exc.status_code or status.HTTP_500_INTERNAL_SERVER_ERROR
         return JSONResponse(
             status_code=status_code,
             content=ErrorResponse(

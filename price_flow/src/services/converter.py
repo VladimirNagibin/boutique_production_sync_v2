@@ -35,7 +35,9 @@ class FileUploader:
 
             with Path.open(Path(file_path), "rb") as f:
                 files = {"file": (Path(file_path).name, f)}
-                response = requests.post(self.upload_url, files=files, timeout=30)
+                response = requests.post(
+                    self.upload_url, files=files, timeout=30
+                )
 
             response.raise_for_status()
             data = response.json()
@@ -61,9 +63,15 @@ class FileUploader:
                 token="",
                 message="",
                 success=False,
-                error=f"HTTP error: {e.response.status_code} - {e.response.text}",
+                error=(
+                    f"HTTP error: {e.response.status_code} - "
+                    f"{e.response.text}"
+                ),
             )
-        except (requests.exceptions.Timeout, requests.exceptions.RequestException) as e:
+        except (
+            requests.exceptions.Timeout,
+            requests.exceptions.RequestException,
+        ) as e:
             return UploadResult(
                 filename="",
                 token="",
