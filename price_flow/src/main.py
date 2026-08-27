@@ -1,4 +1,5 @@
 import sys
+import time
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -17,13 +18,16 @@ from api.health_checker import health_router
 from api.v1.v1_router import v1_router
 from common.exceptions.base import BaseAppException
 from common.exceptions.enums import ErrorCode
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 from db.postgres import db_manager
 
 # from db.redis import close_redis, init_redis
 from middleware.execution_time_middleware import ExecutionTimeMiddleware
 from schemas.response_schemas import ErrorResponse
+
+
+logger = get_logger(__name__)
 
 
 # ===== Константы =====
@@ -47,30 +51,54 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Yields:
         None
     """
-    logger.info("Initializing %s ...", app.title)
+    logger.info(
+        "Application startup initiated",
+        extra={"application": app.title},
+    )
     try:
         await db_manager.initialize()
-        logger.info("✅ Database initialized successfully")
+        logger.info("Database initialized")
         configure_admin_panel(app)
         # await init_redis()
         # await initialize_bitrix_container()
-    except Exception as e:  # noqa: BLE001
-        logger.critical("Fatal error during startup: %s", e)
+    except Exception as exc:
+        logger.critical(
+            "Application startup failed",
+            extra={
+                "application": app.title,
+                "error_type": type(exc).__name__,
+            },
+            exc_info=True,
+        )
         # При фатальной ошибке инициализации завершаем процесс
         sys.exit(1)
 
+    logger.info(
+        "Application startup completed",
+        extra={"application": app.title},
+    )
     yield
 
-    logger.info("Closing %s ...", app.title)
+    logger.info(
+        "Application shutdown initiated",
+        extra={"application": app.title},
+    )
     # await close_redis()
     # await shutdown_bitrix_container()
     try:
         await db_manager.dispose()
-        logger.info("✅ Database connections closed")
-    except Exception as e:  # noqa: BLE001
-        logger.error("⚠️ Error during database shutdown: %s", e)
+        logger.info("Database connections closed")
+    except Exception as exc:
+        logger.error(
+            "Database shutdown failed",
+            extra={"error_type": type(exc).__name__},
+            exc_info=True,
+        )
 
-    logger.info("Application shutdown complete.")
+    logger.info(
+        "Application shutdown completed",
+        extra={"application": app.title},
+    )
 
 
 # ===== Настройка маршрутов =====
@@ -120,11 +148,26 @@ def configure_exception_handlers(app: FastAPI) -> None:
         Обрабатывает все бизнес-исключения приложения (наследники
         BaseAppException).
         """
-        request_id = request.headers.get("X-Request-ID")
-        execution_time_ms = float(
-            request.headers.get("X-Execution-Time-Ms", 0)
+        request_id = getattr(request.state, "request_id", None)
+        execution_time_ms = _get_execution_time_ms(request)
+        status_code = exc.status_code or status.HTTP_500_INTERNAL_SERVER_ERROR
+        log_method = (
+            logger.warning
+            if status_code < status.HTTP_500_INTERNAL_SERVER_ERROR
+            else logger.error
         )
-        status_code = getattr(exc, "status_code", status.HTTP_400_BAD_REQUEST)
+        log_method(
+            "Application exception handled",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": status_code,
+                "error_code": exc.error_code,
+                "error_type": type(exc).__name__,
+                "execution_time_ms": execution_time_ms,
+            },
+        )
         return JSONResponse(
             status_code=status_code,
             content=ErrorResponse(
@@ -147,20 +190,19 @@ def configure_exception_handlers(app: FastAPI) -> None:
         Обрабатывает все непредвиденные исключения
         (500 Internal Server Error).
         """
-        request_id = request.headers.get("X-Request-ID")
-        execution_time_ms = float(
-            request.headers.get("X-Execution-Time-Ms", 0)
-        )
+        request_id = getattr(request.state, "request_id", None)
+        execution_time_ms = _get_execution_time_ms(request)
 
         logger.error(
-            "Unexpected error",
+            "Unexpected request exception",
             extra={
-                "error": str(exc),
+                "request_id": request_id,
                 "error_type": type(exc).__name__,
                 "path": request.url.path,
                 "method": request.method,
+                "execution_time_ms": execution_time_ms,
             },
-            exc_info=True,
+            exc_info=(type(exc), exc, exc.__traceback__),
         )
 
         return JSONResponse(
@@ -179,6 +221,18 @@ def configure_exception_handlers(app: FastAPI) -> None:
         )
 
 
+def _get_execution_time_ms(request: Request) -> float:
+    """Возвращает длительность запроса на момент обработки исключения."""
+    execution_time_ms = getattr(request.state, "execution_time_ms", None)
+    if execution_time_ms is not None:
+        return float(execution_time_ms)
+
+    started_at = getattr(request.state, "request_started_at", None)
+    if started_at is None:
+        return 0.0
+    return round((time.perf_counter() - float(started_at)) * 1000.0, 4)
+
+
 # ===== Статические файлы =====
 
 
@@ -191,9 +245,15 @@ def mount_static_files(app: FastAPI) -> None:
         app.mount(
             "/static", StaticFiles(directory=str(static_dir)), name="static"
         )
-        logger.debug(f"Mounted static files from {static_dir}")
+        logger.debug(
+            "Static files mounted",
+            extra={"static_directory": str(static_dir)},
+        )
     else:
-        logger.warning(f"Static directory not found: {static_dir}")
+        logger.warning(
+            "Static directory not found",
+            extra={"static_directory": str(static_dir)},
+        )
 
 
 # ===== Фабрика приложения =====
@@ -245,5 +305,12 @@ app = create_fastapi_application()
 
 # ===== Точка входа =====
 if __name__ == "__main__":
-    logger.info("Starting server %s ...", app.title)
+    logger.info(
+        "Server process starting",
+        extra={
+            "application": app.title,
+            "host": settings.app.host,
+            "port": settings.app.port,
+        },
+    )
     start_server()

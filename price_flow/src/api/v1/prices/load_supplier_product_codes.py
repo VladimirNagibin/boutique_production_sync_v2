@@ -3,9 +3,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, UploadFile
 
 from api.deps import verify_api_key
+from core.logger import get_logger
 from schemas.response_schemas import SuccessResponse
 from services.prices.load_codes import LoaderCodes, get_loader_codes
 
+
+logger = get_logger(__name__)
 
 load_supplier_product_codes_router = APIRouter(
     dependencies=[Depends(verify_api_key)]
@@ -21,4 +24,7 @@ async def load_all_codes(
     ],
     loader_codes: Annotated[LoaderCodes, Depends(get_loader_codes)],
 ) -> SuccessResponse:
-    return await loader_codes.load_file(file)
+    logger.info("Supplier product codes loading started")
+    result = await loader_codes.load_file(file)
+    logger.info("Supplier product codes loading completed")
+    return result

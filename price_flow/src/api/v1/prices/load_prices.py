@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import StreamingResponse
 
 # from api.deps import verify_api_key
+from core.logger import get_logger
 from schemas.response_schemas import SuccessResponse
 from services.prices.lanseti.price_loader import (
     PriceLoader as PriceLoaderLanset,
@@ -21,6 +22,8 @@ from services.prices.nulan.price_loader import (
 )
 
 
+logger = get_logger(__name__)
+
 load_prices_router = APIRouter()  # dependencies=[Depends(verify_api_key)])
 
 
@@ -30,7 +33,15 @@ async def load_price_lanset(
         PriceLoaderLanset, Depends(get_price_loader_lanset)
     ],
 ) -> SuccessResponse:
+    logger.info(
+        "Supplier price loading started",
+        extra={"supplier": "lanset"},
+    )
     upload_result, details = await price_loader.process_price()
+    logger.info(
+        "Supplier price loading completed",
+        extra={"supplier": "lanset"},
+    )
     return SuccessResponse(
         data=upload_result.model_dump(),
         details=details,
@@ -43,16 +54,27 @@ async def load_price_nulan(
     # supplier: Annotated[
     #    str, (..., description="supplier")
     # ],
-    price_loader: Annotated[
-        PriceLoaderNulan, Depends(get_price_loader_nulan)
-    ],
+    price_loader: Annotated[PriceLoaderNulan, Depends(get_price_loader_nulan)],
 ) -> StreamingResponse:
+    logger.info(
+        "Supplier price loading started",
+        extra={"supplier": "nulan"},
+    )
     df = await price_loader.process_price()
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Прайс-лист", index=False)
 
     output.seek(0)
+    logger.info(
+        "Supplier price export prepared",
+        extra={
+            "supplier": "nulan",
+            "row_count": len(df.index),
+            "column_count": len(df.columns),
+            "packing_format": "xlsx",
+        },
+    )
 
     return StreamingResponse(
         output,
@@ -73,11 +95,17 @@ async def load_codes_nulan(
     file: Annotated[
         UploadFile, File(..., description="zip file with xlsx product codes")
     ],
-    price_loader: Annotated[
-        PriceLoaderNulan, Depends(get_price_loader_nulan)
-    ],
+    price_loader: Annotated[PriceLoaderNulan, Depends(get_price_loader_nulan)],
 ) -> SuccessResponse:
+    logger.info(
+        "Supplier product codes loading started",
+        extra={"supplier": "nulan"},
+    )
     upload_result = await price_loader.load_products(file)
+    logger.info(
+        "Supplier product codes loading completed",
+        extra={"supplier": "nulan"},
+    )
     return SuccessResponse(
         data=upload_result.model_dump(), message="Price nulan loaded"
     )

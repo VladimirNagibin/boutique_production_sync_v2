@@ -174,7 +174,7 @@ class SeqSettings(BaseSettings):
 
     # ----- Поля модели -----
     enabled: bool = Field(
-        default=False,
+        default=True,
         description="Enable Seq logging",
     )
     url: str = Field(
@@ -238,7 +238,7 @@ class SeqSettings(BaseSettings):
                 value=v,
                 reason="URL must start with http:// or https://",
             )
-        return v
+        return str(v)
 
     @field_validator("level")
     @classmethod

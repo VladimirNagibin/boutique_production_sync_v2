@@ -4,7 +4,7 @@ from functools import lru_cache
 from cryptography.exceptions import InvalidKey  # type: ignore[import-not-found]
 from cryptography.fernet import Fernet, InvalidToken  # type: ignore[import-not-found]
 
-# from core.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 
 from core.exceptions import (
@@ -13,6 +13,9 @@ from core.exceptions import (
     TokenDecryptionError,
     TokenEncryptionError,
 )
+
+
+logger = get_logger(__name__)
 
 
 class TokenCipher:
@@ -31,6 +34,7 @@ class TokenCipher:
         encryption_key = encryption_key or settings.ENCRYPTION_KEY
 
         if not encryption_key:
+            logger.critical("Encryption key is missing")
             raise InvalidEncryptionKeyError("Encryption key cannot be empty")
 
         try:
@@ -47,16 +51,17 @@ class TokenCipher:
                 raise InvalidEncryptionKeyError("Encryption key verification failed")
 
         except (ValueError, TypeError, InvalidKey) as e:
-            # logger.critical(
-            #     "Invalid encryption key provided",
-            #     extra={"key_length": len(encryption_key)},
-            # )
+            logger.critical(
+                "Invalid encryption key provided",
+                extra={"key_length": len(encryption_key), "error": str(e)},
+            )
             raise InvalidEncryptionKeyError(f"Invalid encryption key: {e}") from e
         except Exception as e:
-            # logger.critical(
-            #     "Unexpected error during cipher initialization",
-            #     extra={"error": str(e)},
-            # )
+            logger.critical(
+                "Cipher initialization failed",
+                extra={"error": str(e)},
+                exc_info=True,
+            )
             raise TokenCipherError(f"Cipher initialization failed: {e}") from e
 
     async def encrypt(self, data: str) -> bytes:
@@ -79,10 +84,11 @@ class TokenCipher:
             encrypted_data = await asyncio.to_thread(self._encrypt_sync, data)
             return encrypted_data
         except Exception as e:
-            # logger.error(
-            #     "Token encryption failed",
-            #     extra={"data_length": len(data), "error": str(e)},
-            # )
+            logger.error(
+                "Token encryption failed",
+                extra={"data_length": len(data), "error": str(e)},
+                exc_info=True,
+            )
             raise TokenEncryptionError(f"Token encryption error: {e}") from e
 
     async def decrypt(self, encrypted_data: bytes) -> str:
@@ -106,16 +112,17 @@ class TokenCipher:
             decrypted_str = await asyncio.to_thread(self._decrypt_sync, encrypted_data)
             return decrypted_str
         except InvalidToken as e:
-            # logger.warning(
-            #     "Invalid token during decryption",
-            #     extra={"data_length": len(encrypted_data)},
-            # )
+            logger.warning(
+                "Invalid token during decryption",
+                extra={"data_length": len(encrypted_data)},
+            )
             raise TokenDecryptionError("Invalid or corrupted token") from e
         except Exception as e:
-            # logger.error(
-            #     "Token decryption failed",
-            #     extra={"data_length": len(encrypted_data), "error": str(e)},
-            # )
+            logger.error(
+                "Token decryption failed",
+                extra={"data_length": len(encrypted_data), "error": str(e)},
+                exc_info=True,
+            )
             raise TokenDecryptionError(f"Token decryption error: {e}") from e
 
     def _encrypt_sync(self, data: str) -> bytes:
@@ -168,4 +175,6 @@ def get_token_cipher() -> TokenCipher:
         InvalidEncryptionKeyError: Если ключ шифрования некорректен
     """
 
-    return TokenCipher()
+    cipher = TokenCipher()
+    logger.info("Token cipher initialized")
+    return cipher

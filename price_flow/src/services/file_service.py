@@ -10,6 +10,11 @@ import pandas as pd
 
 from fastapi import HTTPException, UploadFile
 
+from core.logger import get_logger
+
+
+logger = get_logger(__name__)
+
 
 class FileService:
     """Асинхронный сервис для упаковки/распаковки данных"""
@@ -18,13 +23,28 @@ class FileService:
     async def read_upload_file(file: UploadFile) -> bytes:
         """Асинхронно прочитать загруженный файл"""
         data: bytes = await file.read()
+        logger.info(
+            "Upload file read",
+            extra={"file_name": file.filename, "size_bytes": len(data)},
+        )
         return data
 
     @staticmethod
     async def write_download_file(data: bytes, filename: str) -> None:
         """Асинхронно записать файл"""
-        async with aiofiles.open(filename, "wb") as f:
-            await f.write(data)
+        try:
+            async with aiofiles.open(filename, "wb") as f:
+                await f.write(data)
+        except OSError:
+            logger.exception(
+                "Download file write failed",
+                extra={"file_name": filename, "size_bytes": len(data)},
+            )
+            raise
+        logger.info(
+            "Download file written",
+            extra={"file_name": filename, "size_bytes": len(data)},
+        )
 
     @staticmethod
     def pack_to_zip(
@@ -50,6 +70,13 @@ class FileService:
                 zip_file.writestr(f"{filename}.csv", csv_buffer.getvalue())
 
         zip_buffer.seek(0)
+        logger.info(
+            "Data packed to ZIP",
+            extra={
+                "record_count": len(data),
+                "archive_size_bytes": zip_buffer.getbuffer().nbytes,
+            },
+        )
         return zip_buffer
 
     @staticmethod
@@ -64,6 +91,13 @@ class FileService:
             gz_file.write(json_data.encode("utf-8"))
 
         gzip_buffer.seek(0)
+        logger.info(
+            "Data packed to GZIP",
+            extra={
+                "record_count": len(data),
+                "archive_size_bytes": gzip_buffer.getbuffer().nbytes,
+            },
+        )
         return gzip_buffer
 
     @staticmethod
@@ -72,6 +106,7 @@ class FileService:
         Упаковывает данные в CSV файл (без сжатия)
         """
         if not data:
+            logger.warning("CSV export requested without data")
             raise HTTPException(
                 status_code=400, detail="Нет данных для экспорта"
             )
@@ -80,6 +115,13 @@ class FileService:
         df = pd.DataFrame(data)
         df.to_csv(csv_buffer, index=False, encoding="utf-8")
         csv_buffer.seek(0)
+        logger.info(
+            "Data packed to CSV",
+            extra={
+                "record_count": len(data),
+                "size_bytes": csv_buffer.getbuffer().nbytes,
+            },
+        )
         return csv_buffer
 
     @staticmethod
@@ -91,6 +133,13 @@ class FileService:
         json_data = json.dumps(data, ensure_ascii=False, indent=2)
         json_buffer.write(json_data.encode("utf-8"))
         json_buffer.seek(0)
+        logger.info(
+            "Data packed to JSON",
+            extra={
+                "record_count": len(data),
+                "size_bytes": json_buffer.getbuffer().nbytes,
+            },
+        )
         return json_buffer
 
     @staticmethod
@@ -107,6 +156,13 @@ class FileService:
                 if json_files:
                     with zip_file.open(json_files[0]) as json_file:
                         data: list[dict[str, Any]] = json.load(json_file)
+                        logger.info(
+                            "ZIP data unpacked",
+                            extra={
+                                "source_format": "json",
+                                "record_count": len(data),
+                            },
+                        )
                         return data
 
                 # Ищем CSV файл
@@ -117,16 +173,32 @@ class FileService:
                     with zip_file.open(csv_files[0]) as csv_file:
                         df = pd.read_csv(csv_file)
                         records: list[dict[str, Any]] = df.to_dict("records")
+                        logger.info(
+                            "ZIP data unpacked",
+                            extra={
+                                "source_format": "csv",
+                                "record_count": len(records),
+                            },
+                        )
                         return records
 
+                logger.warning("ZIP archive contains no supported data file")
                 raise HTTPException(
                     status_code=400, detail="В архиве нет JSON или CSV файла"
                 )
         except zipfile.BadZipFile as e:
+            logger.warning(
+                "ZIP unpack failed",
+                extra={"error_type": type(e).__name__},
+            )
             raise HTTPException(
                 status_code=400, detail="Некорректный ZIP файл"
             ) from e
         except json.JSONDecodeError as e:
+            logger.warning(
+                "ZIP JSON decode failed",
+                extra={"error_type": type(e).__name__},
+            )
             raise HTTPException(
                 status_code=400, detail="Некорректный JSON файл"
             ) from e
@@ -142,12 +214,24 @@ class FileService:
             ) as gz_file:
                 json_data = gz_file.read().decode("utf-8")
                 data: list[dict[str, Any]] = json.loads(json_data)
+                logger.info(
+                    "GZIP data unpacked",
+                    extra={"record_count": len(data)},
+                )
                 return data
         except gzip.BadGzipFile as e:
+            logger.warning(
+                "GZIP unpack failed",
+                extra={"error_type": type(e).__name__},
+            )
             raise HTTPException(
                 status_code=400, detail="Некорректный GZIP файл"
             ) from e
         except json.JSONDecodeError as e:
+            logger.warning(
+                "GZIP JSON decode failed",
+                extra={"error_type": type(e).__name__},
+            )
             raise HTTPException(
                 status_code=400, detail="Некорректный JSON"
             ) from e
@@ -161,10 +245,18 @@ class FileService:
             df = pd.read_csv(io.BytesIO(file_content))
             records: list[dict[str, Any]] = df.to_dict("records")
         except Exception as e:
+            logger.warning(
+                "CSV unpack failed",
+                extra={"error_type": type(e).__name__},
+            )
             raise HTTPException(
                 status_code=400, detail=f"Ошибка чтения CSV: {e!s}"
             ) from e
         else:
+            logger.info(
+                "CSV data unpacked",
+                extra={"record_count": len(records)},
+            )
             return records
 
     @staticmethod
@@ -177,10 +269,18 @@ class FileService:
                 file_content.decode("utf-8")
             )
         except json.JSONDecodeError as e:
+            logger.warning(
+                "JSON unpack failed",
+                extra={"error_type": type(e).__name__},
+            )
             raise HTTPException(
                 status_code=400, detail="Некорректный JSON файл"
             ) from e
         else:
+            logger.info(
+                "JSON data unpacked",
+                extra={"record_count": len(data)},
+            )
             return data
 
     @staticmethod
@@ -190,6 +290,10 @@ class FileService:
         """
         Определяет формат по содержимому и имени файла и распаковывает
         """
+        logger.debug(
+            "Detecting uploaded data format",
+            extra={"file_name": filename, "size_bytes": len(file_content)},
+        )
         # По расширению файла
         if filename.endswith(".zip"):
             return FileService.unpack_from_zip(file_content)

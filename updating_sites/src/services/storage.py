@@ -4,7 +4,11 @@ from typing import Any
 
 from tinydb import TinyDB, Query  # type: ignore[import-not-found]
 
+from core.logger import get_logger
 from core.settings import settings
+
+
+logger = get_logger(__name__)
 
 
 class BaseStorage(abc.ABC):
@@ -36,7 +40,12 @@ class TinyDBStorage(BaseStorage):
             # upsert: если документ с таким ключом есть — обновит, если нет — создаст
             self.db.upsert({"key": key, "value": value}, self.query.key == key)
             return True
-        except Exception:
+        except Exception as error:
+            logger.error(
+                "Storage write failed",
+                extra={"key": key, "error": str(error)},
+                exc_info=True,
+            )
             return False
 
     def get_state(self, key: str, default: Any = None) -> Any:
@@ -45,7 +54,12 @@ class TinyDBStorage(BaseStorage):
             # Ищем документ по ключу
             doc = self.db.get(self.query.key == key)
             return doc["value"] if doc else default
-        except Exception:
+        except Exception as error:
+            logger.warning(
+                "Storage read failed",
+                extra={"key": key, "error": str(error)},
+                exc_info=True,
+            )
             return default
 
 

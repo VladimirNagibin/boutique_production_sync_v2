@@ -8,6 +8,7 @@ from sshtunnel import SSHTunnelForwarder  # type: ignore[import-not-found]
 from sqlalchemy import Row, create_engine, text, Table, MetaData
 from sqlalchemy.engine.base import Engine
 
+from core.logger import get_logger
 from core.settings import settings
 from services.helper import (
     get_request_for_upd,
@@ -15,6 +16,9 @@ from services.helper import (
     get_tables_for_export,
     get_tables_for_overload,
 )
+
+
+logger = get_logger(__name__)
 
 
 class PortalServices:
@@ -34,8 +38,27 @@ class PortalServices:
                 index=False,
                 chunksize=10000,
             )
-        except Exception as e:
-            return 0, str(e)
+        except Exception as error:
+            logger.error(
+                "CSV import to table failed",
+                extra={
+                    "portal": self.portal,
+                    "table": table,
+                    "file": file,
+                    "error": str(error),
+                },
+                exc_info=True,
+            )
+            return 0, str(error)
+        logger.info(
+            "CSV import to table completed",
+            extra={
+                "portal": self.portal,
+                "table": table,
+                "file": file,
+                "rows": result,
+            },
+        )
         return result, ""
 
     def update_tables(self) -> tuple[list[Any], bool]:
@@ -50,9 +73,18 @@ class PortalServices:
                     res["error"] = err
                     success = False
                 result.append(res)
+        else:
+            logger.warning(
+                "No file-table mapping found",
+                extra={"portal": self.portal},
+            )
         return result, success
 
     def update_portal(self) -> bool:
+        logger.info(
+            "Portal SQL update started",
+            extra={"portal": self.portal},
+        )
         try:
             with self.engine.connect() as connection:
                 request = get_request_for_upd(self.portal)
@@ -60,8 +92,17 @@ class PortalServices:
                     for query in request.split(";"):
                         if query.strip():
                             connection.execute(text(query))
-        except Exception as e:
-            raise e
+        except Exception as error:
+            logger.error(
+                "Portal SQL update failed",
+                extra={"portal": self.portal, "error": str(error)},
+                exc_info=True,
+            )
+            raise
+        logger.info(
+            "Portal SQL update completed",
+            extra={"portal": self.portal},
+        )
         return True
 
 
@@ -87,9 +128,12 @@ class EtlServices:
     def overload_tables(self, page: int | None = None) -> dict[str, Any]:
         metadata = MetaData()
         result: dict[str, Any] = {"tables": [], "page": page, "upd": False}
+        logger.info("ETL overload started", extra={"page": page})
+        current_table: str | None = None
         try:
             with self.engine_recipient.connect() as connection:
                 for table_name in get_tables_for_overload(page):
+                    current_table = table_name
                     result["tables"].append(table_name)
                     table_recipient = Table(
                         table_name,
@@ -107,8 +151,26 @@ class EtlServices:
                             connection.execute(insert_stmt)
                             connection.commit()
                         number_page += 1
-        except Exception as e:
-            result["error"] = str(e)
+        except Exception as error:
+            result["error"] = str(error)
+            logger.error(
+                "ETL overload failed",
+                extra={
+                    "page": page,
+                    "table": current_table,
+                    "error": str(error),
+                },
+                exc_info=True,
+            )
+        else:
+            logger.info(
+                "ETL overload completed",
+                extra={
+                    "page": page,
+                    "table_count": len(result["tables"]),
+                    "updated": result["upd"],
+                },
+            )
         return result
 
 
@@ -126,10 +188,28 @@ class ExportService:
         # filestamp = time.strftime('%Y-%m-%d-%I')
         file = f"data/upload/{database}_{part}"
         tables = " ".join(get_tables_for_export(part))
+        logger.info(
+            "Database export started",
+            extra={
+                "portal": self.portal,
+                "part": part,
+                "database": database,
+            },
+        )
         result = subprocess.run(
             f"mysqldump -h %s -P %s -u %s -p%s %s {tables} > %s.sql"
             % (host, port, db_user, db_pass, database, file),
             shell=True,
+        )
+        log_method = logger.info if result.returncode == 0 else logger.error
+        log_method(
+            "Database export completed",
+            extra={
+                "portal": self.portal,
+                "part": part,
+                "database": database,
+                "return_code": result.returncode,
+            },
         )
         return result.returncode, file
 
@@ -141,14 +221,32 @@ class ExportService:
                 zip_file_name_path, "w", compression=zipfile.ZIP_DEFLATED
             ) as zipf:
                 zipf.write(file, zip_file_name)
+                logger.info(
+                    "Export archive created",
+                    extra={
+                        "portal": self.portal,
+                        "source_file": file,
+                        "archive": zip_file_name_path,
+                    },
+                )
                 return zip_file_name_path
-        except Exception as e:
-            raise e
+        except Exception as error:
+            logger.error(
+                "Export archive creation failed",
+                extra={
+                    "portal": self.portal,
+                    "source_file": file,
+                    "error": str(error),
+                },
+                exc_info=True,
+            )
+            raise
 
 
 class UpdatingPortalServis:
     def update_portal(self, portal: str) -> dict[str, Any]:
         result: dict[str, Any] = {}
+        logger.info("Portal update started", extra={"portal": portal})
         with SSHTunnelForwarder(
             ssh_address_or_host=settings.host,
             ssh_username=settings.login,
@@ -172,9 +270,18 @@ class UpdatingPortalServis:
                         result["update_portal"] = str(e)
                 else:
                     result["update_portal"] = "not started"
+        logger.info(
+            "Portal update completed",
+            extra={
+                "portal": portal,
+                "tables_updated": result.get("update_tables_result", False),
+                "portal_status": result.get("update_portal"),
+            },
+        )
         return result
 
     def etl(self, page: int | None) -> dict[str, Any]:  # type: ignore[return]
+        logger.info("ETL synchronization started", extra={"page": page})
         with (
             SSHTunnelForwarder(
                 ssh_address_or_host=settings.recipient.host,
@@ -216,14 +323,32 @@ class UpdatingPortalServis:
                     result["file"] = zip_file
                 except Exception:
                     result["file"] = file
+                    logger.warning(
+                        "Export archive unavailable; SQL file retained",
+                        extra={
+                            "portal": export_services.portal,
+                            "part": part,
+                            "file": file,
+                        },
+                    )
             else:
                 result["error"] = "Error exporting tables"
-        except Exception as e:
-            result["error"] = str(e)
+        except Exception as error:
+            result["error"] = str(error)
+            logger.error(
+                "Export part failed",
+                extra={
+                    "portal": export_services.portal,
+                    "part": part,
+                    "error": str(error),
+                },
+                exc_info=True,
+            )
         return result
 
     def export_table(self, portal: str) -> list[Any]:
         result: list[Any] = []
+        logger.info("Portal export started", extra={"portal": portal})
         with SSHTunnelForwarder(
             ssh_address_or_host=settings.host,
             ssh_username=settings.login,
@@ -238,6 +363,14 @@ class UpdatingPortalServis:
                 export_services = ExportService(server, portal)
                 result.append(self.export_table_part(export_services, 1))
                 result.append(self.export_table_part(export_services, 2))
+        logger.info(
+            "Portal export completed",
+            extra={
+                "portal": portal,
+                "part_count": len(result),
+                "error_count": sum(1 for item in result if item.get("error")),
+            },
+        )
         return result
 
 

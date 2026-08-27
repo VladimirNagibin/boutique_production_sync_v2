@@ -12,12 +12,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.templating import Jinja2Templates
 
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 from repositories.tinydb_repo import TinyDBRepository, get_tinydb_repo
 from schemas.v1.response_schemas import TokenResponse
 from services.auth import UserAuthService, get_auth_service
 
+logger = get_logger(__name__)
 auth_router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 templates = Jinja2Templates(directory=f"{settings.base_dir}/templates")
@@ -40,9 +41,17 @@ async def register(
     """Обработка формы регистрации."""
     try:
         if await repo.create_user(username=email, password=password):
+            logger.info(
+                "User registration completed",
+                extra={"username": email},
+            )
             return RedirectResponse(
                 url="/api/v1/auth/register?success=1", status_code=303
             )
+        logger.warning(
+            "User registration rejected: user already exists",
+            extra={"username": email},
+        )
         return RedirectResponse(
             url="/api/v1/auth/register?error=User already exists",
             status_code=303,
@@ -50,11 +59,19 @@ async def register(
 
     except HTTPException as e:
         # Возвращаем ошибку обратно на форму
+        logger.warning(
+            "User registration rejected",
+            extra={"username": email, "reason": e.detail},
+        )
         return RedirectResponse(
             url=f"/api/v1/auth/register?error={e.detail}", status_code=303
         )
     except Exception as e:
-        logger.error(f"Unexpected error during registration: {e}", exc_info=True)
+        logger.error(
+            "Unexpected error during registration",
+            extra={"username": email, "error": str(e)},
+            exc_info=True,
+        )
         return RedirectResponse(
             url="/api/v1/auth/register?error=unexpected_error", status_code=303
         )
@@ -82,6 +99,10 @@ async def login(
     try:
         role = await repo.get_role_user(form_data.username, form_data.password)
         if role is None:
+            logger.warning(
+                "Login failed: invalid credentials",
+                extra={"username": form_data.username},
+            )
             return RedirectResponse(
                 url="/api/v1/auth/login?error=Incorrect email or password.",
                 status_code=303,
@@ -119,13 +140,31 @@ async def login(
             samesite="lax",
         )
 
+        logger.info(
+            "Login completed",
+            extra={"username": form_data.username, "role": role},
+        )
         return response
 
     except HTTPException as e:
         # При ошибке редиректим обратно на логин с параметром ошибки
         # e.detail обычно "Incorrect email or password"
+        logger.warning(
+            "Login rejected",
+            extra={"username": form_data.username, "reason": e.detail},
+        )
         return RedirectResponse(
             url=f"/api/v1/auth/login?error={e.detail}", status_code=303
+        )
+    except Exception as error:
+        logger.error(
+            "Unexpected error during login",
+            extra={"username": form_data.username, "error": str(error)},
+            exc_info=True,
+        )
+        return RedirectResponse(
+            url="/api/v1/auth/login?error=unexpected_error",
+            status_code=303,
         )
 
 
@@ -137,4 +176,5 @@ async def logout() -> Response:
     response.delete_cookie("access_token")
     response.delete_cookie("refresh_token")
     response.headers["HX-Redirect"] = "/api/v1/auth/login/"
+    logger.info("User logged out")
     return response

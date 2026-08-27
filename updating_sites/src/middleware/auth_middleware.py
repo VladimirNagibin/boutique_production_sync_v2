@@ -7,8 +7,11 @@ from starlette.middleware.base import (
 from starlette.types import ASGIApp
 
 from api.v1.deps import get_current_user_from_cookie
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
+
+
+logger = get_logger(__name__)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -52,7 +55,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
             # Устанавливаем новые cookie, если они есть
             if new_cookies:
-                logger.info("Setting new cookies via middleware")
+                logger.info(
+                    "Authentication cookies refreshed",
+                    extra={
+                        "path": request.url.path,
+                        "role": token_data.role,
+                    },
+                )
                 response.set_cookie(
                     key="access_token",
                     value=new_cookies["access_token"],
@@ -72,6 +81,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     # secure=False,
                 )
             if token_data.role != "admin":
+                logger.warning(
+                    "Admin access denied: insufficient role",
+                    extra={
+                        "path": request.url.path,
+                        "role": token_data.role,
+                    },
+                )
                 return Response(
                     status_code=303,
                     headers={
@@ -82,6 +98,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         except HTTPException as e:
             # Если нет аутентификации, возвращаем ошибку или редирект
+            logger.warning(
+                "Authentication required",
+                extra={
+                    "path": request.url.path,
+                    "method": request.method,
+                    "status_code": e.status_code,
+                },
+            )
             if e.status_code == 303:
                 return Response(
                     status_code=303,
@@ -93,7 +117,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
             return Response(status_code=e.status_code, content={"detail": e.detail})
         except Exception as e:
-            logger.error(f"Auth middleware error: {e}", exc_info=True)
+            logger.error(
+                "Auth middleware failed",
+                extra={
+                    "path": request.url.path,
+                    "method": request.method,
+                    "error": str(e),
+                },
+                exc_info=True,
+            )
             return JSONResponse(
                 status_code=500, content={"detail": "Internal server error"}
             )

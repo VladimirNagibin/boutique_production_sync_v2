@@ -11,6 +11,7 @@ from common.exceptions.settings import (
     SettingsLoadError,
 )
 
+# from core.logger import get_logger
 from .auth import SECRET_KEY_MIN_LENGTH, AuthSettings
 from .base import AppSettings, SeqSettings
 from .database import (

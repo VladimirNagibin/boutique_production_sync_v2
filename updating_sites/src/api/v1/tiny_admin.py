@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 from repositories.tinydb_repo import TinyDBRepository, get_tinydb_repo
 
@@ -28,6 +28,7 @@ from .helpers import (
 # ===== Константы =====
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 МБ
 TEMPLATES_DIR = f"{settings.base_dir}/templates"
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/admin/db", tags=["admin"])
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -242,7 +243,7 @@ async def import_data(
             "Data imported successfully",
             extra={"file_name": file.filename, "count": len(data)},
         )
-
+        await repo.ensure_admin_exists()
         docs = await repo.get_all()
         return HTMLResponse(content=_generate_table_html(docs))
 

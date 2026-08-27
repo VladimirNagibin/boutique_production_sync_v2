@@ -15,9 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.exceptions.database import DatabaseLoadError
 from common.exceptions.file import CsvParsingError, FileAppNotFoundError
-from common.logger import logger
+from core.logger import get_logger
 from db.postgres import get_session_generator, run_sync_db_operation
 from models.supplier_models import SupplierProductCode
+
+
+logger = get_logger(__name__)
 
 
 # ===== Константы =====
@@ -100,7 +103,12 @@ class SupplierProductCodeRepository:
             SupplierProductCode.id == record_id
         )
         result = await self._session.execute(stmt)
-        return bool(result.rowcount > 0)  # type: ignore[attr-defined]
+        deleted = bool(result.rowcount > 0)  # type: ignore[attr-defined]
+        logger.info(
+            "Supplier product code delete completed",
+            extra={"deleted_count": int(deleted)},
+        )
+        return deleted
 
     async def get_supplier_data(
         self, supplier_id: int
@@ -196,7 +204,7 @@ class SupplierProductCodeRepository:
             error_message = f"Error loading CSV: {e}"
             raise DatabaseLoadError(error_message) from e
         else:
-            return result  # type: ignore[no-any-return]
+            return result
 
     # ----- Приватные вспомогательные методы -----
 
@@ -216,8 +224,8 @@ class SupplierProductCodeRepository:
         logger.debug("Reading CSV file", extra={"path": str(csv_path)})
         encoding = self._detect_file_encoding(csv_path)
         logger.debug(
-            f"Определена кодировка файла: {encoding}",
-            extra={"file_path": str(csv_path)},
+            "Detected supplier product codes CSV encoding",
+            extra={"file_path": str(csv_path), "encoding": encoding},
         )
         try:
             # Читаем файл с обработкой ошибок
@@ -236,20 +244,31 @@ class SupplierProductCodeRepository:
                 na_filter=False,  # Не фильтровать NaN для производительности
             )
         except UnicodeDecodeError as e:
-            logger.error(f"Ошибка кодировки: {e}", exc_info=True)
+            logger.error(
+                "Supplier product codes CSV decoding failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             raise CsvParsingError(
                 csv_path,
                 f"Не удалось прочитать файл из-за кодировки: {csv_path}",
             ) from e
 
         except pd.errors.EmptyDataError as e:
-            logger.warning(f"CSV файл пуст или поврежден: {csv_path}")
+            logger.warning(
+                "Supplier product codes CSV is empty or invalid",
+                extra={"file_path": str(csv_path)},
+            )
             raise CsvParsingError(
                 csv_path, "Файл пуст или содержит только заголовки."
             ) from e
 
         except pd.errors.ParserError as e:
-            logger.error(f"Ошибка парсинга CSV: {e}", exc_info=True)
+            logger.error(
+                "Supplier product codes CSV parsing failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             raise CsvParsingError(
                 csv_path, f"Формат файла не соответствует CSV: {e}"
             ) from e
@@ -257,7 +276,9 @@ class SupplierProductCodeRepository:
         except Exception as e:
             # Ловим остальные возможные ошибки pandas
             logger.error(
-                f"Неожиданная ошибка при чтении CSV: {e}", exc_info=True
+                "Unexpected supplier product codes CSV read error",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
             )
             raise CsvParsingError(
                 csv_path, f"Ошибка при чтении файла: {e}"
@@ -295,7 +316,7 @@ class SupplierProductCodeRepository:
 
         if missing_columns:
             logger.warning(
-                "Отсутствуют обязательные колонки",
+                "Supplier product codes CSV is missing required columns",
                 extra={
                     "missing_columns": missing_columns,
                     "available_columns": list(df.columns),
@@ -343,7 +364,10 @@ class SupplierProductCodeRepository:
     def _validate_data_frame(self, df: DataFrame, csv_path: Path) -> None:
         """Проверяет, что DataFrame не пустой."""
         if len(df) == 0:
-            logger.warning(f"CSV файл пуст: {csv_path}")
+            logger.warning(
+                "Supplier product codes CSV contains no rows",
+                extra={"file_path": str(csv_path)},
+            )
             raise CsvParsingError(csv_path, "Файл не содержит данных")
 
     def _load_dataframe_to_db(
@@ -391,14 +415,23 @@ class SupplierProductCodeRepository:
                 )
                 trans.commit()
                 logger.debug(
-                    "Data inserted",
-                    extra={"rows": rows_loaded, "chunksize": chunksize},
+                    "Supplier product codes bulk replace completed",
+                    extra={
+                        "rows": rows_loaded
+                        if rows_loaded is not None
+                        else len(df),
+                        "chunksize": chunksize,
+                    },
                 )
             except Exception as e:
                 trans.rollback()
                 logger.error(
-                    "DB load failed",
-                    extra={"error": str(e)},
+                    "Supplier product codes bulk replace failed",
+                    extra={
+                        "row_count": len(df),
+                        "chunksize": chunksize,
+                        "error_type": type(e).__name__,
+                    },
                     exc_info=True,
                 )
                 error_message = f"Database load error: {e}"
@@ -430,9 +463,7 @@ class SupplierProductCodeRepository:
         cursor = dbapi_conn.cursor()
         try:
             sql = f"INSERT INTO {table.name} ({', '.join(keys)}) VALUES %s"  # noqa: S608
-            execute_values(
-                cursor, sql, data_iter, page_size=DEFAULT_CHUNKSIZE
-            )
+            execute_values(cursor, sql, data_iter, page_size=DEFAULT_CHUNKSIZE)
         finally:
             cursor.close()
 

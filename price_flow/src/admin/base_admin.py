@@ -5,7 +5,7 @@ PAGE_SIZE = 50  # Количество записей на странице
 
 
 # Базовые настройки модели
-class BaseAdmin(ModelView):  # type: ignore[misc]
+class BaseAdmin(ModelView):  # type: ignore[misc, unused-ignore]
     page_size = PAGE_SIZE
     can_create = True
     can_edit = True

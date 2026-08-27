@@ -2,15 +2,20 @@
 
 Обеспечивает вывод логов в консоль (JSON),
 файл с ротацией и удалённый сервер Seq.
+Отправка в Seq выполняется в фоновом потоке через очередь,
+чтобы не блокировать async event loop и не вызывать deadlock.
 Добавляет в каждую запись информацию о модуле, классе и методе вызова.
 """
 
 from __future__ import annotations
 
+import atexit
 import inspect
 import json
 import logging
 import logging.config
+import queue
+import sys
 import threading
 import time
 
@@ -29,22 +34,46 @@ from .utils import FILTER_FIELDS, SYSTEM_FIELDS, LogLevel
 
 
 # ===== Константы настройки =====
-SEQ_BATCH_SIZE = 1
+SEQ_BATCH_SIZE = 50
 SEQ_AUTO_FLASH_INTERVAL = 2.0
 SEQ_TIMEOUT = 5
+SEQ_QUEUE_MAXSIZE = 2000
+SEQ_MAX_FAILURES = 5
+SEQ_CIRCUIT_COOLDOWN_SECONDS = 30.0
+SEQ_WORKER_JOIN_TIMEOUT = 5.0
 FILE_MAX_BYTES = 10 * 1024 * 1024
 FILE_BACKUP_COUNT = 5
+_SEQ_STOP = object()
 
 
-# ===== Хендлер для отправки в Seq (CLEF-формат) =====
+def _create_seq_internal_logger() -> logging.Logger:
+    """Создаёт изолированный логгер для ошибок Seq-handler.
+
+    Не пропагирует в root, чтобы исключить рекурсию и deadlock
+    при сбоях отправки в Seq.
+    """
+    internal_logger = logging.getLogger(f"{__name__}.SeqJsonHandler")
+    internal_logger.propagate = False
+    internal_logger.setLevel(logging.WARNING)
+    if not internal_logger.handlers:
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(name)s %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%S",
+            )
+        )
+        internal_logger.addHandler(stderr_handler)
+    return internal_logger
+
+
+# ===== Хендлер для асинхронной отправки в Seq =====
 class SeqJsonHandler(logging.Handler):
-    """Отправляет логи в Seq через HTTP API в формате CLEF.
+    """Отправляет логи в Seq через HTTP API без блокировки вызывающего потока.
 
-    Логи буферизируются и отправляются пачками (batch) для повышения
-    производительности. При ошибках отправки буфер очищается,
-    чтобы избежать бесконечных повторных попыток.
-    Использует блокирующий `requests`, что может
-    замедлить работу асинхронных приложений при высокой нагрузке.
+    ``emit`` только форматирует запись и кладёт её в очередь.
+    Фоновый поток накапливает события и отправляет их пачками.
+    Ошибки отправки пишутся во внутренний stderr-логгер без propagate.
     """
 
     def __init__(
@@ -53,6 +82,7 @@ class SeqJsonHandler(logging.Handler):
         api_key: str = "",
         batch_size: int = SEQ_BATCH_SIZE,
         auto_flush_interval: float = SEQ_AUTO_FLASH_INTERVAL,
+        queue_maxsize: int = SEQ_QUEUE_MAXSIZE,
     ) -> None:
         """Инициализирует хендлер.
 
@@ -61,31 +91,46 @@ class SeqJsonHandler(logging.Handler):
             api_key: API-ключ для аутентификации (опционально).
             batch_size: Количество событий в одной пачке.
             auto_flush_interval: Максимальное время (сек) между
-            автоматическими отправками.
+                автоматическими отправками.
+            queue_maxsize: Максимальный размер очереди событий.
         """
         super().__init__()
         self.server_url = server_url.rstrip("/")
         self.api_key = api_key
-        self.batch_size = batch_size
+        self.batch_size = max(1, batch_size)
         self.auto_flush_interval = auto_flush_interval
-        self.batch: list[str] = []
-        self._last_flush = 0.0
-        self._lock = threading.Lock()
-        self._logger = logging.getLogger(f"{__name__}.SeqJsonHandler")
+        self._queue: queue.Queue[str | object] = queue.Queue(maxsize=queue_maxsize)
+        self._logger = _create_seq_internal_logger()
         self._fail_count = 0
+        self._circuit_open_until = 0.0
+        self._dropped_count = 0
+        self._closed = False
+        self._worker = threading.Thread(
+            target=self._worker_loop,
+            name="seq-log-sender",
+            daemon=True,
+        )
+        self._worker.start()
+
+    # ----- Публичные методы -----
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Форматирует запись и добавляет в буфер."""
+        """Форматирует запись и ставит её в очередь без сетевого I/O."""
+        if self._closed:
+            return
         try:
+            if time.time() < self._circuit_open_until:
+                self._dropped_count += 1
+                return
             msg = self.format(record)
-            with self._lock:
-                self.batch.append(msg)
-                now = time.time()
-                if (
-                    len(self.batch) >= self.batch_size
-                    or (now - self._last_flush) >= self.auto_flush_interval
-                ):
-                    self._flush_internal()
+            self._queue.put_nowait(msg)
+        except queue.Full:
+            self._dropped_count += 1
+            if self._dropped_count == 1 or self._dropped_count % 100 == 0:
+                self._logger.warning(
+                    "Seq queue full, dropped %d events",
+                    self._dropped_count,
+                )
         except (ValueError, TypeError, AttributeError) as e:
             self._logger.error("Error formatting record: %s", e, exc_info=True)
             self.handleError(record)
@@ -97,31 +142,107 @@ class SeqJsonHandler(logging.Handler):
             )
             self.handleError(record)
 
-    def _flush_internal(self) -> None:
-        """
-        Выполняет отправку накопленных событий. Вызывается с захваченным lock.
-        """
-        if not self.batch:
+    def flush(self) -> None:
+        """Дожидается опустошения очереди (без остановки воркера)."""
+        if self._closed:
+            return
+        # Воркер сам отправит накопленное по интервалу/размеру.
+        # Здесь ждём, пока очередь опустеет, с таймаутом.
+        deadline = time.time() + SEQ_WORKER_JOIN_TIMEOUT
+        while not self._queue.empty() and time.time() < deadline:
+            time.sleep(0.05)
+
+    def close(self) -> None:
+        """Останавливает воркер и отправляет оставшиеся события."""
+        if self._closed:
+            super().close()
+            return
+        self._closed = True
+        try:
+            try:
+                self._queue.put(_SEQ_STOP, timeout=1.0)
+            except queue.Full:
+                self._logger.warning("Seq queue full during close, stop signal skipped")
+            self._worker.join(timeout=SEQ_WORKER_JOIN_TIMEOUT)
+            if self._worker.is_alive():
+                self._logger.warning("Seq worker did not stop in time")
+            if self._dropped_count:
+                self._logger.warning(
+                    "Seq handler closed with %d dropped events",
+                    self._dropped_count,
+                )
+        finally:
+            super().close()
+
+    # ----- Приватные методы -----
+
+    def _worker_loop(self) -> None:
+        """Фоновый цикл: накопление батча и отправка в Seq."""
+        batch: list[str] = []
+        last_flush = time.time()
+        while True:
+            timeout = max(0.05, self.auto_flush_interval - (time.time() - last_flush))
+            try:
+                item = self._queue.get(timeout=timeout)
+            except queue.Empty:
+                if batch:
+                    self._send_batch(batch)
+                    batch = []
+                    last_flush = time.time()
+                continue
+
+            if item is _SEQ_STOP:
+                if batch:
+                    self._send_batch(batch)
+                # Дочитываем остаток очереди без ожидания новых событий.
+                while True:
+                    try:
+                        leftover = self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if leftover is _SEQ_STOP:
+                        continue
+                    batch.append(str(leftover))
+                    if len(batch) >= self.batch_size:
+                        self._send_batch(batch)
+                        batch = []
+                if batch:
+                    self._send_batch(batch)
+                return
+
+            batch.append(str(item))
+            if len(batch) >= self.batch_size:
+                self._send_batch(batch)
+                batch = []
+                last_flush = time.time()
+
+    def _send_batch(self, batch: list[str]) -> None:
+        """Отправляет пачку событий в Seq. Вызывается только из воркера."""
+        if not batch:
+            return
+
+        if time.time() < self._circuit_open_until:
+            self._dropped_count += len(batch)
             return
 
         events: list[dict[str, Any]] = []
-        for event_str in self.batch:
+        for event_str in batch:
             try:
                 event = json.loads(event_str)
-                # Валидация обязательных полей CLEF
                 if "Timestamp" in event and "MessageTemplate" in event:
                     events.append(event)
                 else:
-                    self._logger.warning("Invalid event, skipping: %s", event_str[:100])
-
+                    self._logger.warning(
+                        "Invalid Seq event skipped: %s", event_str[:100]
+                    )
             except json.JSONDecodeError:
                 self._logger.error(
-                    "JSON parse error: %s", event_str[:100], exc_info=True
+                    "JSON parse error for Seq event: %s",
+                    event_str[:100],
+                    exc_info=True,
                 )
-                continue
 
         if not events:
-            self.batch.clear()
             return
 
         headers = {"Content-Type": "application/json"}
@@ -136,47 +257,45 @@ class SeqJsonHandler(logging.Handler):
                 timeout=SEQ_TIMEOUT,
             )
             response.raise_for_status()
-            self.batch.clear()
-            self._last_flush = time.time()
             self._fail_count = 0
+            self._circuit_open_until = 0.0
         except RequestException as e:
-            self._logger.error("Network error sending to Seq: %s", e, exc_info=True)
             self._fail_count += 1
-            # При потере пакета на network error, мы теряем батч,
-            # чтобы не забивать буфер и не ломать логирование
-            self.batch.clear()
+            # Без exc_info: иначе urllib3-stack смешивается с queue.Empty воркера.
+            self._logger.error("Network error sending to Seq: %s", e)
+            self._open_circuit_if_needed()
         except (ValueError, TypeError) as e:
-            self._logger.error("Data error sending to Seq: %s", e, exc_info=True)
-            self.batch.clear()
+            self._fail_count += 1
+            self._logger.error("Data error sending to Seq: %s", e)
+            self._open_circuit_if_needed()
         except Exception as e:
-            self._logger.error("Unexpected error sending to Seq: %s", e, exc_info=True)
-            self.batch.clear()
+            self._fail_count += 1
+            self._logger.error(
+                "Unexpected error sending to Seq: %s",
+                e,
+                exc_info=True,
+            )
+            self._open_circuit_if_needed()
 
-    def flush(self) -> None:
-        """
-        Принудительная отправка всех накопленных событий (потокобезопасно).
-        """
-        with self._lock:
-            self._flush_internal()
-
-    def close(self) -> None:
-        """Гарантированная отправка оставшихся логов при закрытии."""
-        try:
-            if self.batch:
-                self._logger.info(
-                    "Closing Seq handler, flushing %d events", len(self.batch)
-                )
-                self.flush()
-        finally:
-            super().close()
+    def _open_circuit_if_needed(self) -> None:
+        """Открывает circuit breaker после серии ошибок отправки."""
+        if self._fail_count < SEQ_MAX_FAILURES:
+            return
+        self._circuit_open_until = time.time() + SEQ_CIRCUIT_COOLDOWN_SECONDS
+        self._logger.warning(
+            "Seq circuit open for %.0fs after %d failures",
+            SEQ_CIRCUIT_COOLDOWN_SECONDS,
+            self._fail_count,
+        )
+        self._fail_count = 0
 
 
-# ===== Форматтер для Seq в стандарте CLEF =====
+# ===== Форматтер для Seq (Raw Events JSON) =====
 class SeqClefFormatter(logging.Formatter):
     """
-    Форматтер для Seq в формате CLEF (Compact Log Event Format).
+    Форматтер событий Seq для endpoint ``/api/events/raw``.
 
-    Документация: https://docs.datalust.co/docs/sending-raw-json
+    Документация: https://docs.datalust.co/docs/posting-raw-events
     """
 
     def __init__(self) -> None:
@@ -414,7 +533,7 @@ def _create_seq_handler() -> logging.Handler | None:
     """
     Создаёт хендлер для отправки логов в Seq. Возвращает None при ошибке.
     """
-    if not settings.seq.url:
+    if not settings.seq.url or not settings.seq.is_enabled:
         return None
 
     try:
@@ -466,7 +585,7 @@ def patch_logging_handlers() -> None:
                 file_enabled = True
 
     # 2. Seq хендлер
-    if settings.seq.url:
+    if settings.seq.url and settings.seq.is_enabled:
         already_has_seq = any(isinstance(h, SeqJsonHandler) for h in root.handlers)
         if not already_has_seq:
             seq_handler = _create_seq_handler()
@@ -486,10 +605,26 @@ def patch_logging_handlers() -> None:
 
 # ===== Настройка уровня логов внешних библиотек =====
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
 
 
 # ===== Инициализация модуля =====
 _init_done = False
+
+
+def _shutdown_logging() -> None:
+    """Корректно закрывает хендлеры, включая фоновый Seq-воркер."""
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        try:
+            handler.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            handler.close()
+        except Exception:  # noqa: BLE001
+            pass
+    logging.shutdown()
 
 
 def _init_logging() -> None:
@@ -506,16 +641,7 @@ def _init_logging() -> None:
     sync_logger.propagate = True
     sync_logger.setLevel(getattr(settings.app, "log_level", LogLevel.INFO))
 
-    # Регистрируем принудительный сброс буферов при завершении
-    import atexit
-
-    def flush_all() -> None:
-        for h in logging.getLogger().handlers:
-            if hasattr(h, "flush"):
-                h.flush()
-        logging.shutdown()
-
-    atexit.register(flush_all)
+    atexit.register(_shutdown_logging)
     _init_done = True
 
 
@@ -523,4 +649,9 @@ def _init_logging() -> None:
 _init_logging()
 
 # Глобальный логгер
-logger = logging.getLogger("sync")
+logger = logging.getLogger(__name__)
+
+
+def get_logger(name: str) -> logging.Logger:
+    """Возвращает настроенный логгер указанного модуля."""
+    return logging.getLogger(name)

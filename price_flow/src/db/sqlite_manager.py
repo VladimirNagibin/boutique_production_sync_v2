@@ -10,14 +10,17 @@ from typing import Any
 
 import aiosqlite
 
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 from interfaces.db.base import IDatabaseManager, ITransactionManager
 
 from .sql_scripts import sql_script_create_table
 
 
-class SQLiteTransactionManager(ITransactionManager):  # type: ignore[misc]
+logger = get_logger(__name__)
+
+
+class SQLiteTransactionManager(ITransactionManager):
     """Async SQLite transaction manager."""
 
     def __init__(self, connection: aiosqlite.Connection):
@@ -46,7 +49,7 @@ class SQLiteTransactionManager(ITransactionManager):  # type: ignore[misc]
             raise
 
 
-class SQLiteManager(IDatabaseManager):  # type: ignore[misc]
+class SQLiteManager(IDatabaseManager):
     """Async SQLite database manager."""
 
     def __init__(
@@ -58,6 +61,10 @@ class SQLiteManager(IDatabaseManager):  # type: ignore[misc]
 
     async def initialize(self) -> None:
         """Initialize database and connection pool."""
+        logger.info(
+            "Initializing SQLite database",
+            extra={"pool_size": self.pool_size},
+        )
         await self._init_database()
 
     async def get_db_connection(self) -> aiosqlite.Connection:
@@ -99,7 +106,7 @@ class SQLiteManager(IDatabaseManager):  # type: ignore[misc]
             await conn.executescript(sql_script_create_table)
 
             await conn.commit()
-            logger.info("SQLite database initialized asynchronously")
+            logger.info("SQLite database initialized")
 
     async def execute_query(
         self, query: str, params: tuple[Any] | None = None
@@ -123,9 +130,21 @@ class SQLiteManager(IDatabaseManager):  # type: ignore[misc]
 
     async def execute_many(self, query: str, params_list: list[Any]) -> None:
         """Execute many SQL statements asynchronously."""
-        async with self.get_connection() as conn:
-            await conn.executemany(query, params_list)
-            await conn.commit()
+        try:
+            async with self.get_connection() as conn:
+                await conn.executemany(query, params_list)
+                await conn.commit()
+        except (OSError, sqlite3.Error):
+            logger.error(
+                "SQLite bulk write failed",
+                extra={"row_count": len(params_list)},
+                exc_info=True,
+            )
+            raise
+        logger.info(
+            "SQLite bulk write completed",
+            extra={"row_count": len(params_list)},
+        )
 
     async def backup(self, backup_path: str | None = None) -> bool:
         """Create database backup using native SQLite API (thread-safe)."""
@@ -142,12 +161,16 @@ class SQLiteManager(IDatabaseManager):  # type: ignore[misc]
 
             await asyncio.to_thread(_run_backup)
         except (OSError, sqlite3.Error) as e:
-            logger.error(f"Backup failed: {e}")
+            logger.error(
+                "SQLite backup failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             with suppress(OSError):
-                Path(backup_path).unlink()
+                await asyncio.to_thread(Path(backup_path).unlink)
             return False
         else:
-            logger.info(f"SQLite database backed up to {backup_path}")
+            logger.info("SQLite database backup completed")
             return True
 
     async def health_check(self) -> bool:
@@ -159,12 +182,17 @@ class SQLiteManager(IDatabaseManager):  # type: ignore[misc]
                 await cursor.close()
                 return True
         except sqlite3.Error as e:
-            logger.error(f"Health check failed: {e}")
+            logger.error(
+                "SQLite health check failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             return False
 
     async def close(self) -> None:
         """Close all connections asynchronously."""
         # Для SQLite aiosqlite соединения закрываются автоматически
+        logger.info("SQLite database manager closed")
 
     def create_transaction_manager(
         self, connection: aiosqlite.Connection
@@ -196,5 +224,9 @@ class SQLiteManager(IDatabaseManager):  # type: ignore[misc]
             await conn.execute(sql)
             await conn.commit()
             logger.info(
-                f"SQLite add column: {column_def} to table: {table_name}"
+                "SQLite column added",
+                extra={
+                    "table_name": table_name,
+                    "column_definition": column_def,
+                },
             )

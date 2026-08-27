@@ -183,7 +183,7 @@ class RedisSettings(BaseSettings):
     @classmethod
     def validate_db(cls, v: int) -> int:
         if v < 0:
-            from core.exceptions.settings import InvalidSettingsValueError
+            from common.exceptions.settings import InvalidSettingsValueError
 
             raise InvalidSettingsValueError(
                 field_name="db",

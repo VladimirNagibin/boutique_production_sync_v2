@@ -108,7 +108,7 @@ class AdminListAndDetailMixin:
             ):
                 result = enum_class.get_display_name(value)
                 if result and isinstance(result, str):
-                    return result  # type: ignore[no-any-return]
+                    return result  # type: ignore[no-any-return, unused-ignore]
 
             # Method 2: For Python Enum classes - try to get the enum member
             if isinstance(enum_class, type) and issubclass(enum_class, Enum):
@@ -136,7 +136,7 @@ class AdminListAndDetailMixin:
                 if callable(method):
                     result = method(value)
                     if result and isinstance(result, str):
-                        return result  # type: ignore[no-any-return]
+                        return result  # type: ignore[no-any-return, unused-ignore]
 
         except (AttributeError, ValueError, TypeError):
             pass

@@ -10,7 +10,7 @@ from .sql_scripts import sql_script_create_table
 
 async def get_db_connection() -> aiosqlite.Connection:
     """Получить асинхронное соединение с SQLite"""
-    conn = await aiosqlite.connect(settings.DB_SQLITE_PATH)
+    conn = await aiosqlite.connect(settings.sqlite.sqlite_file)
     conn.row_factory = aiosqlite.Row  # Возвращать строки как словари
 
     return conn

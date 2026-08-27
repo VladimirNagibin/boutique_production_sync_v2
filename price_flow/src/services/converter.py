@@ -4,8 +4,11 @@ from pathlib import Path
 
 import requests
 
-# from core.logger import logger
+from core.logger import get_logger
 from schemas.converter_schemas import UploadResult
+
+
+logger = get_logger(__name__)
 
 
 class FileUploader:
@@ -23,8 +26,13 @@ class FileUploader:
         Returns:
             UploadResult: Результат загрузки
         """
+        path = Path(file_path)
         try:
-            if not Path(file_path).exists():
+            if not path.exists():
+                logger.warning(
+                    "Converter upload file not found",
+                    extra={"file_name": path.name},
+                )
                 return UploadResult(
                     filename="",
                     token="",
@@ -33,12 +41,22 @@ class FileUploader:
                     error=f"File not found: {file_path}",
                 )
 
-            with Path.open(Path(file_path), "rb") as f:
-                files = {"file": (Path(file_path).name, f)}
-                response = requests.post(self.upload_url, files=files, timeout=30)
+            logger.info(
+                "Starting converter upload",
+                extra={"file_name": path.name},
+            )
+            with Path.open(path, "rb") as f:
+                files = {"file": (path.name, f)}
+                response = requests.post(
+                    self.upload_url, files=files, timeout=30
+                )
 
             response.raise_for_status()
             data = response.json()
+            logger.info(
+                "Converter upload completed",
+                extra={"file_name": path.name},
+            )
 
             return UploadResult(
                 filename=data.get("filename", ""),
@@ -48,6 +66,10 @@ class FileUploader:
             )
 
         except requests.exceptions.ConnectionError:
+            logger.exception(
+                "Converter connection failed",
+                extra={"file_name": path.name},
+            )
             return UploadResult(
                 filename="",
                 token="",
@@ -56,14 +78,33 @@ class FileUploader:
                 error="Cannot connect to server. Make sure API is running.",
             )
         except requests.exceptions.HTTPError as e:
+            logger.exception(
+                "Converter returned an HTTP error",
+                extra={
+                    "file_name": path.name,
+                    "status_code": e.response.status_code,
+                },
+            )
             return UploadResult(
                 filename="",
                 token="",
                 message="",
                 success=False,
-                error=f"HTTP error: {e.response.status_code} - {e.response.text}",
+                error=(
+                    f"HTTP error: {e.response.status_code} - {e.response.text}"
+                ),
             )
-        except (requests.exceptions.Timeout, requests.exceptions.RequestException) as e:
+        except (
+            requests.exceptions.Timeout,
+            requests.exceptions.RequestException,
+        ) as e:
+            logger.exception(
+                "Converter upload request failed",
+                extra={
+                    "file_name": path.name,
+                    "error_type": type(e).__name__,
+                },
+            )
             return UploadResult(
                 filename="",
                 token="",
@@ -72,6 +113,13 @@ class FileUploader:
                 error=f"Request failed: {e!s}",
             )
         except OSError as e:
+            logger.exception(
+                "Converter upload file operation failed",
+                extra={
+                    "file_name": path.name,
+                    "error_type": type(e).__name__,
+                },
+            )
             return UploadResult(
                 filename="",
                 token="",
@@ -80,6 +128,13 @@ class FileUploader:
                 error=f"File operation error: {e!s}",
             )
         except json.JSONDecodeError as e:
+            logger.exception(
+                "Converter returned invalid JSON",
+                extra={
+                    "file_name": path.name,
+                    "error_type": type(e).__name__,
+                },
+            )
             return UploadResult(
                 filename="",
                 token="",

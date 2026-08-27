@@ -6,9 +6,13 @@ from typing import Any
 
 import aiosqlite
 
+from core.logger import get_logger
 from db.factory import AsyncDatabaseFactory
 from interfaces.db.base import IDatabaseManager
 from schemas.supplier_schemas import ClothingCodeCreate, ClothingCodeUpdate
+
+
+logger = get_logger(__name__)
 
 
 class ClothingCodesRepo:
@@ -51,6 +55,7 @@ class ClothingCodesRepo:
         if self._conn:
             await self._conn.close()
             self._conn = None
+            logger.info("Clothing codes repository connection closed")
 
     async def __aenter__(self) -> "ClothingCodesRepo":
         """Вход в контекстный менеджер"""
@@ -215,8 +220,27 @@ class ClothingCodesRepo:
                 )
             )
         conn = await self._get_connection()
-        cursor = await conn.executemany(query, values_list)
-        return int(cursor.rowcount)
+        try:
+            cursor = await conn.executemany(query, values_list)
+        except Exception as e:
+            logger.error(
+                "Clothing codes bulk create failed",
+                extra={
+                    "row_count": len(items),
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
+            raise
+        created_count = int(cursor.rowcount)
+        logger.info(
+            "Clothing codes bulk create completed",
+            extra={
+                "requested_count": len(items),
+                "created_count": created_count,
+            },
+        )
+        return created_count
 
     async def update(self, product_id: int, data: ClothingCodeUpdate) -> bool:
         """Обновить запись"""
@@ -255,12 +279,25 @@ class ClothingCodesRepo:
             "DELETE FROM supplier_clothing_codes WHERE supplier_id = ?",
             (supplier_id,),
         )
-        return int(cursor.rowcount)
+        deleted_count = int(cursor.rowcount)
+        logger.info(
+            "Supplier clothing codes deleted",
+            extra={
+                "supplier_id": supplier_id,
+                "deleted_count": deleted_count,
+            },
+        )
+        return deleted_count
 
     async def delete_all(self) -> int:
         """Удалить все записи"""
         cursor = await self._execute("DELETE FROM supplier_clothing_codes")
-        return int(cursor.rowcount)
+        deleted_count = int(cursor.rowcount)
+        logger.info(
+            "All clothing codes deleted",
+            extra={"deleted_count": deleted_count},
+        )
+        return deleted_count
 
     async def count(self, supplier_id: int | None = None) -> int:
         """Подсчитать количество записей"""
@@ -284,9 +321,7 @@ class ClothingCodesRepo:
         Возвращает: {"action": "created/updated", "id": id}
         """
         # Проверяем существование
-        existing = await self.get_by_supplier_code(
-            data.supplier_id, data.code
-        )
+        existing = await self.get_by_supplier_code(data.supplier_id, data.code)
 
         if existing:
             # Обновляем
@@ -308,6 +343,10 @@ class ClothingCodesRepo:
         created = 0
         updated = 0
         errors: list[Any] = []
+        logger.info(
+            "Starting clothing codes bulk upsert",
+            extra={"row_count": len(items)},
+        )
 
         for idx, item in enumerate(items):
             try:
@@ -321,6 +360,26 @@ class ClothingCodesRepo:
                     {"row": idx, "data": item.model_dump(), "error": str(e)}
                 )
 
+        if errors:
+            logger.warning(
+                "Clothing codes bulk upsert completed with errors",
+                extra={
+                    "requested_count": len(items),
+                    "created_count": created,
+                    "updated_count": updated,
+                    "error_count": len(errors),
+                },
+            )
+        else:
+            logger.info(
+                "Clothing codes bulk upsert completed",
+                extra={
+                    "requested_count": len(items),
+                    "created_count": created,
+                    "updated_count": updated,
+                    "error_count": 0,
+                },
+            )
         return created, updated, errors
 
     async def get_by_filters(
