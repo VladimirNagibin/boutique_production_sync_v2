@@ -4,7 +4,7 @@ from functools import lru_cache
 from http import HTTPStatus
 from typing import Any
 
-import dropbox  # type: ignore[import-not-found]
+import dropbox
 import requests
 from dropbox import DropboxOAuth2FlowNoRedirect
 from fastapi import Depends
@@ -35,7 +35,7 @@ class DropboxService:
         auth_flow = DropboxOAuth2FlowNoRedirect(
             settings.dropbox_app_key,
             settings.dropbox_app_secret,
-            token_access_type="offline",
+            token_access_type="offline",  # noqa: S106
         )
 
         authorize_url = auth_flow.start()
@@ -49,12 +49,18 @@ class DropboxService:
         try:
             oauth_result = auth_flow.finish(auth_code)
         except Exception as e:
-            logger.error("Dropbox authorization failed", extra={"error": str(e)})
+            logger.error(
+                "Dropbox authorization failed", extra={"error": str(e)}
+            )
             raise
             # exit(1)
 
-        access_saved = self._set_token("access_token", oauth_result.access_token)
-        refresh_saved = self._set_token("refresh_token", oauth_result.refresh_token)
+        access_saved = self._set_token(
+            "access_token", oauth_result.access_token
+        )
+        refresh_saved = self._set_token(
+            "refresh_token", oauth_result.refresh_token
+        )
         if access_saved and refresh_saved:
             logger.info("Dropbox tokens saved successfully")
         else:
@@ -83,7 +89,7 @@ class DropboxService:
                 extra={"error": str(e)},
             )
             return False
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(
                 "Unexpected error during token check",
                 extra={"error": str(e)},
@@ -109,7 +115,9 @@ class DropboxService:
             "client_secret": settings.dropbox_app_secret,
         }
         try:
-            response = requests.post(settings.dropbox_token_url, data=data)
+            response = requests.post(
+                settings.dropbox_token_url, data=data, timeout=30
+            )
             response.raise_for_status()
             token_data = response.json()
             self._set_token("access_token", token_data["access_token"])
@@ -148,7 +156,9 @@ class DropboxService:
 
         try:
             with dropbox.Dropbox(oauth2_access_token=access_token) as dbx:
-                return self._upload_file(dbx, local_file_path, dropbox_file_path)
+                return self._upload_file(
+                    dbx, local_file_path, dropbox_file_path
+                )
         except Exception as e:
             logger.error(
                 "Unexpected error during upload",
@@ -227,7 +237,9 @@ class DropboxService:
             "Dropbox update completed",
             extra={
                 "processed": len(result),
-                "error_count": sum(1 for entry in result if entry.get("error")),
+                "error_count": sum(
+                    1 for entry in result if entry.get("error")
+                ),
             },
         )
         return result
@@ -242,7 +254,7 @@ class DropboxService:
         try:
             decoded = base64.b64decode(encrypted)
             return self.token_cipher.decrypt_sync(decoded)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(
                 "Failed to decrypt token",
                 extra={"token_name": token_name, "error": str(e)},
@@ -261,7 +273,7 @@ class DropboxService:
                     extra={"token_name": token_name},
                 )
             return saved
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(
                 "Failed to encrypt/save token",
                 extra={"token_name": token_name, "error": str(e)},
@@ -307,7 +319,9 @@ class DropboxService:
             logger.error("Local file not found", extra={"path": local_path})
             return False
         except PermissionError:
-            logger.error("Permission denied reading file", extra={"path": local_path})
+            logger.error(
+                "Permission denied reading file", extra={"path": local_path}
+            )
             return False
         except dropbox.exceptions.ApiError as e:
             logger.error(
@@ -323,7 +337,9 @@ class DropboxService:
             )
             return False
 
-    def _delete_dropbox_file(self, dbx: dropbox.Dropbox, dropbox_path: str) -> bool:
+    def _delete_dropbox_file(
+        self, dbx: dropbox.Dropbox, dropbox_path: str
+    ) -> bool:
         """Удаляет файл в Dropbox."""
         try:
             dbx.files_delete_v2(dropbox_path)
@@ -449,7 +465,7 @@ class DropboxService:
 
 
 # ----- Dependency Injection -----
-@lru_cache()
+@lru_cache
 def get_dropbox(
     state: State = Depends(get_storage),
     token_cipher: TokenCipher = Depends(get_token_cipher),

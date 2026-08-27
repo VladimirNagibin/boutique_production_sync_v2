@@ -6,10 +6,18 @@ from __future__ import annotations
 
 import html
 import json
+from pathlib import Path
 
 import aiofiles
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+)
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from core.logger import get_logger
@@ -40,8 +48,8 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 async def admin_panel(request: Request) -> HTMLResponse:
     """Главная страница админки"""
     return templates.TemplateResponse(
-        "tinydb.html",  # type: ignore[arg-type]
-        {"request": request},  # type: ignore[arg-type]
+        request,
+        "tinydb.html",
     )
 
 
@@ -49,7 +57,10 @@ async def admin_panel(request: Request) -> HTMLResponse:
 async def get_table_data(
     repo: TinyDBRepository = Depends(get_tinydb_repo),
 ) -> HTMLResponse:
-    """Возвращает всю таблицу (используется при первой загрузке и после добавления)"""
+    """
+    Возвращает всю таблицу (используется при первой загрузке и после
+    добавления)
+    """
     docs = await repo.get_all()
     return HTMLResponse(content=_generate_table_html(docs))
 
@@ -71,7 +82,9 @@ async def add_record(
         logger.info("Record added successfully", extra={"key": key})
 
     except Exception as e:
-        logger.error("Failed to add record", extra={"error": str(e)}, exc_info=True)
+        logger.error(
+            "Failed to add record", extra={"error": str(e)}, exc_info=True
+        )
         return HTMLResponse(
             content=_get_attention(f"Error: {html.escape(str(e))}"),
             status_code=400,
@@ -90,8 +103,9 @@ async def edit_form(
     if not doc:
         return HTMLResponse(content=_get_row("Не найдено"))
 
-    # Обратите внимание: здесь мы НЕ экранируем значения, так как они подставляются в value="..."
-    # и экранирование сломает ввод кавычек. TinyDB безопасно сохранит их как есть.
+    # Обратите внимание: здесь мы НЕ экранируем значения, так как они
+    # подставляются в value="..." и экранирование сломает ввод кавычек.
+    # TinyDB безопасно сохранит их как есть.
     key = str(doc.get("key", ""))
     value = str(doc.get("value", ""))
 
@@ -102,7 +116,9 @@ async def edit_form(
 async def get_single_row(
     doc_id: int, repo: TinyDBRepository = Depends(get_tinydb_repo)
 ) -> HTMLResponse:
-    """Возвращает обычную (не редактируемую) строку. Нужна для кнопки 'Отмена'"""
+    """
+    Возвращает обычную (не редактируемую) строку. Нужна для кнопки 'Отмена'
+    """
     doc = await repo.get_by_id(doc_id)
     if not doc:
         return HTMLResponse(content=_get_row("Не найдено"))
@@ -162,7 +178,9 @@ async def delete_record(
             extra={"error": str(e), "doc_id": doc_id},
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(
+            status_code=500, detail="Internal server error"
+        ) from e
 
     return HTMLResponse(content="")
 
@@ -176,11 +194,15 @@ async def export_data(
         docs = await repo.get_all()
         export_data = [{"doc_id": doc.get("doc_id"), **doc} for doc in docs]
 
-        temp_file = "data/storage/tinydb_export.json"
+        temp_file = str(
+            Path(settings.base_dir) / "data" / "storage" / "tinydb_export.json"
+        )
 
         # Асинхронная запись файла для соблюдения strict async
         async with aiofiles.open(temp_file, "w", encoding="utf-8") as f:
-            await f.write(json.dumps(export_data, ensure_ascii=False, indent=2))
+            await f.write(
+                json.dumps(export_data, ensure_ascii=False, indent=2)
+            )
 
         logger.info("Data exported successfully", extra={"file": temp_file})
 
@@ -191,7 +213,7 @@ async def export_data(
         )
     except Exception as e:
         logger.error("Export failed", extra={"error": str(e)}, exc_info=True)
-        raise HTTPException(status_code=500, detail="Export failed")
+        raise HTTPException(status_code=500, detail="Export failed") from e
 
 
 @router.post("/import/")
@@ -202,7 +224,9 @@ async def import_data(
     """Импортирует данные из JSON-файла (полная замена)"""
     # Проверяем расширение и тип
     if not file.filename or not file.filename.endswith(".json"):
-        logger.warning("Invalid file type uploaded", extra={"file_name": file.filename})
+        logger.warning(
+            "Invalid file type uploaded", extra={"file_name": file.filename}
+        )
         return HTMLResponse(
             content=_get_attention("Error: JSON file required"),
             status_code=400,
@@ -230,7 +254,11 @@ async def import_data(
 
         # Строгая валидация схемы перед очисткой БД
         for item in data:
-            if not isinstance(item, dict) or "key" not in item or "value" not in item:
+            if (
+                not isinstance(item, dict)
+                or "key" not in item
+                or "value" not in item
+            ):
                 raise ValueError("Each item must contain 'key' and 'value'")
 
         # Очистка и вставка

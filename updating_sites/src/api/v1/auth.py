@@ -18,6 +18,7 @@ from repositories.tinydb_repo import TinyDBRepository, get_tinydb_repo
 from schemas.v1.response_schemas import TokenResponse
 from services.auth import UserAuthService, get_auth_service
 
+
 logger = get_logger(__name__)
 auth_router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -27,7 +28,7 @@ templates = Jinja2Templates(directory=f"{settings.base_dir}/templates")
 @auth_router.get("/register", response_class=HTMLResponse)
 async def register_page(request: Request) -> HTMLResponse:
     """Страница регистрации (установки пароля)."""
-    return templates.TemplateResponse("register.html", {"request": request})  # type: ignore[arg-type]
+    return templates.TemplateResponse(request, "register.html")
 
 
 # Регистрация
@@ -80,7 +81,7 @@ async def register(
 @auth_router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request) -> HTMLResponse:
     """Страница регистрации (установки пароля)."""
-    return templates.TemplateResponse("login.html", {"request": request})  # type: ignore[arg-type]
+    return templates.TemplateResponse(request, "login.html")
 
 
 # Логин (получение токена)
@@ -114,7 +115,9 @@ async def login(
         )
 
         # 2. Создаем ответ-редирект (например, на главную страницу)
-        response = RedirectResponse(url="/api/v1/tiny/admin/db/", status_code=303)
+        response = RedirectResponse(
+            url="/api/v1/tiny/admin/db/", status_code=303
+        )
 
         # 3. Устанавливаем куки на сервере
         # Access Token (короткий)
