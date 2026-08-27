@@ -30,6 +30,8 @@ services:
     volumes:
       - ./updating_sites/src:/app/src
       - ./common:/app/src/common
+      # Отдельный volume: bind-mount src часто даёт Permission denied на data/
+      - upd_sites_data:/app/src/data
     env_file:
       - .env.upd_sites
     ports:
@@ -57,3 +59,4 @@ volumes:
   seq-data:
   db_data:
   redis-data:
+  upd_sites_data:
