@@ -10,10 +10,12 @@ from redis.asyncio import Redis
 import uvicorn
 
 from api.v1.upload_files import upload_file_router
-from core.logger import LOGGING_CONFIG, logger
+from core.logger import get_logger
 from core.settings import settings
 from db import redis_client
 from services.tasks import clear_files, listen_to_redis_events
+
+logger = get_logger(__name__)
 
 scheduler = AsyncIOScheduler()
 
@@ -22,34 +24,134 @@ INTERVAL_TRIGGER = 60
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    redis_client.redis = Redis(
-        host=settings.REDIS_HOST,
-        port=settings.REDIS_PORT,
-        password=settings.REDIS_PASSWORD,
+    """Управляет запуском и остановкой ресурсов приложения."""
+    listener_task: asyncio.Task[None] | None = None
+    logger.info(
+        "Converter application startup started",
+        extra={"component": "application", "phase": "startup"},
     )
-    task = asyncio.create_task(listen_to_redis_events())
-    scheduler.add_job(
-        clear_files,
-        trigger=IntervalTrigger(minutes=INTERVAL_TRIGGER),
-        id="clear_files",
-        replace_existing=True,
-    )
-    scheduler.start()
     try:
-        yield  # здесь работает приложение
-    finally:
-        # 1. Сначала отменяем задачу слушателя Redis
-        task.cancel()
         try:
-            await task
-        except asyncio.CancelledError:
-            pass  # ожидаемое поведение
+            redis_client.redis = Redis(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                password=settings.REDIS_PASSWORD,
+            )
+        except Exception:
+            logger.exception(
+                "Redis client initialization failed",
+                extra={"component": "redis", "phase": "startup"},
+            )
+            raise
+        logger.info(
+            "Redis client initialized",
+            extra={
+                "component": "redis",
+                "phase": "startup",
+                "redis_host": settings.REDIS_HOST,
+                "redis_port": settings.REDIS_PORT,
+            },
+        )
 
-        # 2. Закрываем соединение Redis
-        await redis_client.redis.close()
+        try:
+            listener_task = asyncio.create_task(listen_to_redis_events())
+        except Exception:
+            logger.exception(
+                "Redis listener task creation failed",
+                extra={"component": "redis_listener", "phase": "startup"},
+            )
+            raise
+        logger.info(
+            "Redis listener task created",
+            extra={"component": "redis_listener", "phase": "startup"},
+        )
 
-        # 3. Останавливаем планировщик
-        scheduler.shutdown()
+        try:
+            scheduler.add_job(
+                clear_files,
+                trigger=IntervalTrigger(minutes=INTERVAL_TRIGGER),
+                id="clear_files",
+                replace_existing=True,
+            )
+            scheduler.start()
+        except Exception:
+            logger.exception(
+                "File cleanup scheduler startup failed",
+                extra={"component": "scheduler", "phase": "startup"},
+            )
+            raise
+        logger.info(
+            "File cleanup scheduler started",
+            extra={
+                "component": "scheduler",
+                "phase": "startup",
+                "interval_minutes": INTERVAL_TRIGGER,
+            },
+        )
+        logger.info(
+            "Converter application startup completed",
+            extra={"component": "application", "phase": "startup"},
+        )
+        yield
+    except Exception:
+        logger.exception(
+            "Converter application lifespan failed",
+            extra={"component": "application", "phase": "runtime"},
+        )
+        raise
+    finally:
+        logger.info(
+            "Converter application shutdown started",
+            extra={"component": "application", "phase": "shutdown"},
+        )
+
+        if listener_task is not None:
+            listener_task.cancel()
+            try:
+                await listener_task
+            except asyncio.CancelledError:
+                logger.info(
+                    "Redis listener task cancelled",
+                    extra={"component": "redis_listener", "phase": "shutdown"},
+                )
+            except Exception:
+                logger.exception(
+                    "Redis listener task shutdown failed",
+                    extra={"component": "redis_listener", "phase": "shutdown"},
+                )
+
+        if redis_client.redis is not None:
+            try:
+                await redis_client.redis.close()
+                logger.info(
+                    "Redis client closed",
+                    extra={"component": "redis", "phase": "shutdown"},
+                )
+            except Exception:
+                logger.exception(
+                    "Redis client shutdown failed",
+                    extra={"component": "redis", "phase": "shutdown"},
+                )
+            finally:
+                redis_client.redis = None
+
+        if scheduler.running:
+            try:
+                scheduler.shutdown()
+                logger.info(
+                    "File cleanup scheduler stopped",
+                    extra={"component": "scheduler", "phase": "shutdown"},
+                )
+            except Exception:
+                logger.exception(
+                    "File cleanup scheduler shutdown failed",
+                    extra={"component": "scheduler", "phase": "shutdown"},
+                )
+
+        logger.info(
+            "Converter application shutdown completed",
+            extra={"component": "application", "phase": "shutdown"},
+        )
 
 
 app = FastAPI(
@@ -64,12 +166,15 @@ app.include_router(upload_file_router, prefix="/api/v1/files", tags=["files"])
 
 
 if __name__ == "__main__":
-    logger.info("Start app.")
+    logger.info(
+        "Starting Uvicorn server",
+        extra={"component": "uvicorn", "phase": "startup"},
+    )
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8000,
-        log_config=LOGGING_CONFIG,
+        log_config=None,
         log_level=settings.LOG_LEVEL.lower(),
-        reload=False,  #  settings.APP_RELOAD,
+        reload=False,
     )

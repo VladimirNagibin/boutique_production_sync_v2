@@ -11,9 +11,10 @@ from typing import Any
 from passlib.context import CryptContext  # type: ignore[import-untyped]
 from tinydb import Query, TinyDB  # type: ignore[import-not-found]
 
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 
+logger = get_logger(__name__)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
@@ -30,8 +31,16 @@ class TinyDBRepository:
     async def _get_db(self) -> TinyDB:
         """Получает или инициализирует экземпляр TinyDB."""
         if self._db is None:
-            # Инициализация в отдельном потоке, чтобы не блокировать event loop
-            self._db = await asyncio.to_thread(TinyDB, self.db_path)
+            try:
+                # Инициализация в отдельном потоке, чтобы не блокировать event loop
+                self._db = await asyncio.to_thread(TinyDB, self.db_path)
+            except Exception as error:
+                logger.error(
+                    "TinyDB initialization failed",
+                    extra={"db_path": self.db_path, "error": str(error)},
+                    exc_info=True,
+                )
+                raise
         return self._db
 
     # ----- Публичные методы -----
@@ -49,7 +58,12 @@ class TinyDBRepository:
             int: ID новой записи (doc_id)
         """
         db = await self._get_db()
-        return await asyncio.to_thread(db.insert, {"key": key, "value": value})
+        doc_id = await asyncio.to_thread(db.insert, {"key": key, "value": value})
+        logger.info(
+            "TinyDB record inserted",
+            extra={"key": key, "doc_id": doc_id},
+        )
+        return int(doc_id)
 
     async def update(self, doc_id: int, key: str, value: str) -> bool:
         """Обновляет существующую запись по ID."""
@@ -57,12 +71,20 @@ class TinyDBRepository:
         result = await asyncio.to_thread(
             db.update, {"key": key, "value": value}, doc_ids=[doc_id]
         )
+        logger.info(
+            "TinyDB record update completed",
+            extra={"key": key, "doc_id": doc_id, "updated": bool(result)},
+        )
         return bool(result)
 
     async def remove(self, doc_id: int) -> bool:
         """Удаляет запись по ID."""
         db = await self._get_db()
         result = await asyncio.to_thread(db.remove, doc_ids=[doc_id])
+        logger.info(
+            "TinyDB record removal completed",
+            extra={"doc_id": doc_id, "removed": bool(result)},
+        )
         return bool(result)
 
     async def truncate(self) -> None:
@@ -83,10 +105,18 @@ class TinyDBRepository:
         db = await self._get_db()
         User = Query()
         if db.search(User.key == username):
+            logger.warning(
+                "User creation skipped: user already exists",
+                extra={"username": username, "role": role},
+            )
             return False  # пользователь уже существует
         hashed = pwd_context.hash(password)
         await asyncio.to_thread(
             db.insert, {"key": username, "value": role, "password": hashed}
+        )
+        logger.info(
+            "User created",
+            extra={"username": username, "role": role},
         )
         return True
 
@@ -119,9 +149,7 @@ class TinyDBRepository:
         admin_password = settings.ADMIN_PASSWORD
 
         if not admin_email or not admin_password:
-            logger.warning(
-                "ADMIN_EMAIL или ADMIN_PASSWORD не заданы в .env – пропускаем создание администратора."
-            )
+            logger.warning("Admin bootstrap skipped: credentials are not configured")
             return
 
         try:
@@ -131,7 +159,10 @@ class TinyDBRepository:
             existing = db.search(User.key == admin_email)
             if existing:
                 # Если уже есть – ничего не делаем, можно проверить роль (но обычно не нужно)
-                logger.info(f"Администратор {admin_email} уже существует.")
+                logger.info(
+                    "Admin user already exists",
+                    extra={"username": admin_email},
+                )
                 return
 
             # Создаём пользователя с ролью admin
@@ -139,11 +170,21 @@ class TinyDBRepository:
                 username=admin_email, password=admin_password, role="admin"
             )
             if success:
-                logger.info(f"Администратор {admin_email} успешно создан.")
+                logger.info(
+                    "Admin user created",
+                    extra={"username": admin_email},
+                )
             else:
-                logger.error(f"Не удалось создать администратора {admin_email}.")
-        except Exception as e:
-            logger.error(f"Ошибка при создании администратора: {e}", exc_info=True)
+                logger.error(
+                    "Admin user creation failed",
+                    extra={"username": admin_email},
+                )
+        except Exception as error:
+            logger.error(
+                "Admin bootstrap failed",
+                extra={"username": admin_email, "error": str(error)},
+                exc_info=True,
+            )
 
 
 def get_tinydb_repo() -> TinyDBRepository:

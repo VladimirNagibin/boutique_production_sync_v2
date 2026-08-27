@@ -7,6 +7,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 
 dependencies = [
+    "boutique-common",
     "pydantic-settings>=2.6.1",
     "aiosqlite>=0.22.1",
     "python-multipart>=0.0.21",
@@ -44,7 +45,7 @@ dev = [
     "safety>=3.7.0",
     "types-aiofiles>=25.1.0.20251011",
     "types-requests>=2.32.4.20260107",
-    "black>=26.3.1",
+    # "black>=26.3.1",
     "pandas-stubs>=2.3.3.260113",
     "pre-commit>=4.5.1",
     "taskipy>=1.14.1",
@@ -56,9 +57,9 @@ build-backend = "setuptools.build_meta"
 
 # Конфигурация Ruff
 [tool.ruff]
-line-length = 78  # явно задано
+line-length = 79  # явно задано
 target-version = "py313"
-fix = true  # Исправлять ошибки автоматически
+# fix = true  # Исправлять ошибки автоматически
 output-format = "grouped"  # Уровень детализации вывода
 src = ["src"]
 
@@ -82,7 +83,7 @@ select = [
     "EM",  # flake8-errmsg
     "PIE", # flake8-pie
     "SIM", # flake8-simplify
-    "TCH", # flake8-type-checking
+    "TC", # flake8-type-checking
     "TID", # flake8-tidy-imports
     "A",   # flake8-builtins
     "ARG", # flake8-unused-arguments
@@ -130,7 +131,7 @@ max-complexity = 20  # Максимальная сложность когнит�
 "tests/*" = ["S101"]  # разрешить assert в тестах
 
 [tool.ruff.lint.isort]
-known-first-party = ["src", "common"]  # , "api", "core", "db", "interfaces", "repositories", "schemas", "services"]
+known-first-party = ["common", "api", "core", "db", "repositories", "schemas", "services", "admin", "middleware"]  # , "api", "core", "db", "interfaces", "repositories", "schemas", "services"]
 lines-after-imports = 2
 lines-between-types = 1
 
@@ -173,7 +174,7 @@ strict_equality = true
 # exclude = ["tests/", "src/__pycache__"]
 
 # Игнорировать отсутствующие импорты для некоторых модулей
-ignore_missing_imports = true
+ignore_missing_imports = false
 
 # include = [
 #     "src"
@@ -188,14 +189,14 @@ explicit_package_bases = true
 namespace_packages = true
 
 # ВАЖНО: проверяем ТОЛЬКО свой проект
-mypy_path = "src"
-files = ["src"]
+mypy_path = ["price_flow/src", "."]
+files = ["price_flow/src"]
 
 # ИСКЛЮЧАЕМ другие проекты монорепозитория
 exclude = [
     "^converter/.*",
     "^updating_sites/.*",
-    "^src/migrations/.*",
+    "^price_flow/src/migration/.*",
     "^migrations/.*",
     "tests/",
     "src/__pycache__",
@@ -211,7 +212,31 @@ warn_required_dynamic_aliases = true
 
 # Игнорируем недостающие типы для внешних библиотек
 [[tool.mypy.overrides]]
-module = ["pandas.*", "openpyxl.*", "sqladmin.*", "python_json_logger.*"]
+module = [
+  "pythonjsonlogger",
+  "pythonjsonlogger.*",
+  "aiosqlite",
+  "alembic",
+  "alembic.*",
+  "uvicorn",
+  "uvicorn.*",
+  "numpy",
+  "numpy.*",
+  "bs4",
+  "bs4.*",
+  "jose",
+  "jose.*",
+  "psycopg2",
+  "psycopg2.*",
+  "googleapiclient",
+  "googleapiclient.*",
+  "pandas",
+  "pandas.*",
+  "openpyxl",
+  "openpyxl.*",
+  "sqladmin",
+  "sqladmin.*",
+]
 ignore_missing_imports = true
 
 # [[tool.mypy.overrides]]
@@ -308,7 +333,7 @@ clean = "rm -rf .mypy_cache .pytest_cache .ruff_cache __pycache__ *.pyc"
 format-check = "ruff format --check ."
 pre-commit = "pre-commit run --all-files"
 ci = "ruff check . && mypy . && pytest --cov=src --cov-report=term"
-ruff-fix = "ruff check . --fix && mypy . --fix"
+ruff-fix = "ruff check . --fix && mypy ."
 
 
 [tool.uv.sources]

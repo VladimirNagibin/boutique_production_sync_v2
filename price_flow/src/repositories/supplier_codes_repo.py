@@ -13,10 +13,13 @@ from pandas import DataFrame
 
 from common.exceptions.app_exceptions import DatabaseLoadError
 from common.exceptions.file import CsvParsingError, FileAppNotFoundError
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 from db.factory import AsyncDatabaseFactory
 from interfaces.db.base import IDatabaseManager
+
+
+logger = get_logger(__name__)
 
 
 class SupplierCodesRepo:
@@ -58,7 +61,7 @@ class SupplierCodesRepo:
         self._validate_table_name(table_name)
 
         logger.info(
-            "Начало загрузки данных из CSV",
+            "Starting supplier codes CSV load",
             extra={
                 "file_path": str(csv_path),
                 "table_name": table_name,
@@ -67,14 +70,20 @@ class SupplierCodesRepo:
         )
 
         # Проверка существования файла
-        if not csv_path.exists():
-            error_msg = f"CSV файл не найден: {csv_path}"
-            logger.error(error_msg)
+        if not await asyncio.to_thread(csv_path.exists):
+            error_msg = f"CSV file not found: {csv_path}"
+            logger.error(
+                "Supplier codes CSV file not found",
+                extra={"file_path": str(csv_path), "table_name": table_name},
+            )
             raise FileAppNotFoundError(csv_path, error_msg)
 
-        if not csv_path.is_file():
-            error_msg = f"Путь не является файлом: {csv_path}"
-            logger.error(error_msg)
+        if not await asyncio.to_thread(csv_path.is_file):
+            error_msg = f"Path is not a file: {csv_path}"
+            logger.error(
+                "Supplier codes CSV path is not a file",
+                extra={"file_path": str(csv_path), "table_name": table_name},
+            )
             raise ValueError(error_msg)
 
         # Запускаем тяжелую операцию в отдельном потоке
@@ -86,7 +95,7 @@ class SupplierCodesRepo:
             )
 
             logger.info(
-                "Данные успешно загружены",
+                "Supplier codes CSV load completed",
                 extra={
                     "file_path": str(csv_path),
                     "table_name": table_name,
@@ -98,17 +107,32 @@ class SupplierCodesRepo:
 
         except (ValueError, CsvParsingError, FileAppNotFoundError) as e:
             # Ошибки валидации данных и парсинга
-            logger.warning(f"Ошибка обработки данных: {e}")
+            logger.warning(
+                "Supplier codes CSV validation failed",
+                extra={"error_type": type(e).__name__},
+            )
             raise
 
         except DatabaseLoadError as e:
             # Ошибки базы данных
-            logger.error(f"Ошибка базы данных: {e}")
+            logger.error(
+                "Supplier codes database load failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             raise
 
         except Exception as e:
-            error_msg = f"Неожиданная ошибка при загрузке {csv_path}: {e}"
-            logger.error(error_msg, exc_info=True)
+            error_msg = f"Unexpected error loading {csv_path}: {e}"
+            logger.error(
+                "Unexpected supplier codes load error",
+                extra={
+                    "file_path": str(csv_path),
+                    "table_name": table_name,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
             raise RuntimeError(error_msg) from e
         else:
             return result
@@ -181,7 +205,7 @@ class SupplierCodesRepo:
             }
 
             logger.debug(
-                "Синхронная загрузка завершена",
+                "Synchronous supplier codes load completed",
                 extra={
                     "rows_loaded": rows_loaded,
                     "processing_time_ms": processing_time_ms,
@@ -224,7 +248,11 @@ class SupplierCodesRepo:
             }
         except sqlite3.Error as e:
             logger.warning(
-                f"Не удалось получить информацию о таблице {table_name}: {e}"
+                "Failed to inspect supplier codes table",
+                extra={
+                    "table_name": table_name,
+                    "error_type": type(e).__name__,
+                },
             )
             return {"row_count": 0, "column_count": 0, "columns": []}
 
@@ -242,15 +270,17 @@ class SupplierCodesRepo:
             pd.errors.EmptyDataError: Если файл пуст
             pd.errors.ParserError: Если ошибка парсинга
         """
-        logger.debug(f"Чтение CSV файла: {csv_path}")
+        logger.debug(
+            "Reading supplier codes CSV", extra={"file_path": str(csv_path)}
+        )
 
         try:
             # Пробуем определить кодировку файла
             encoding = self._detect_file_encoding(csv_path)
 
             logger.debug(
-                f"Определена кодировка файла: {encoding}",
-                extra={"file_path": str(csv_path)},
+                "Detected supplier codes CSV encoding",
+                extra={"file_path": str(csv_path), "encoding": encoding},
             )
 
             # Читаем файл с обработкой ошибок
@@ -270,7 +300,7 @@ class SupplierCodesRepo:
 
             # Логируем информацию о прочитанных данных
             logger.info(
-                "CSV файл успешно прочитан",
+                "Supplier codes CSV read",
                 extra={
                     "file_path": str(csv_path),
                     "rows": len(df),
@@ -303,7 +333,7 @@ class SupplierCodesRepo:
 
             if missing_columns:
                 logger.warning(
-                    "Отсутствуют обязательные колонки",
+                    "Supplier codes CSV is missing required columns",
                     extra={
                         "missing_columns": missing_columns,
                         "available_columns": list(df.columns),
@@ -311,20 +341,31 @@ class SupplierCodesRepo:
                 )
 
         except UnicodeDecodeError as e:
-            logger.error(f"Ошибка кодировки: {e}", exc_info=True)
+            logger.error(
+                "Supplier codes CSV decoding failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             raise CsvParsingError(
                 csv_path,
                 f"Не удалось прочитать файл из-за кодировки: {csv_path}",
             ) from e
 
         except pd.errors.EmptyDataError as e:
-            logger.warning(f"CSV файл пуст или поврежден: {csv_path}")
+            logger.warning(
+                "Supplier codes CSV is empty or invalid",
+                extra={"file_path": str(csv_path)},
+            )
             raise CsvParsingError(
                 csv_path, "Файл пуст или содержит только заголовки."
             ) from e
 
         except pd.errors.ParserError as e:
-            logger.error(f"Ошибка парсинга CSV: {e}", exc_info=True)
+            logger.error(
+                "Supplier codes CSV parsing failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             raise CsvParsingError(
                 csv_path, f"Формат файла не соответствует CSV: {e}"
             ) from e
@@ -332,7 +373,9 @@ class SupplierCodesRepo:
         except Exception as e:
             # Ловим остальные возможные ошибки pandas
             logger.error(
-                f"Неожиданная ошибка при чтении CSV: {e}", exc_info=True
+                "Unexpected supplier codes CSV read error",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
             )
             raise CsvParsingError(
                 csv_path, f"Ошибка при чтении файла: {e}"
@@ -342,7 +385,10 @@ class SupplierCodesRepo:
 
     def _validate_data_frame(self, df: DataFrame, csv_path: Path) -> None:
         if len(df) == 0:
-            logger.warning(f"CSV файл пуст: {csv_path}")
+            logger.warning(
+                "Supplier codes CSV contains no rows",
+                extra={"file_path": str(csv_path)},
+            )
             raise CsvParsingError(csv_path, "Файл не содержит данных")
 
     def _detect_file_encoding(self, file_path: Path) -> str:
@@ -368,8 +414,8 @@ class SupplierCodesRepo:
                 return encoding
         # По умолчанию возвращаем utf-8
         logger.warning(
-            f"Не удалось определить кодировку для {file_path}, "
-            "используется utf-8"
+            "Could not detect supplier codes CSV encoding; using UTF-8",
+            extra={"file_path": str(file_path)},
         )
         return "utf-8"
 
@@ -388,7 +434,7 @@ class SupplierCodesRepo:
             int: Количество загруженных строк
         """
         logger.debug(
-            "Загрузка DataFrame в базу данных",
+            "Starting supplier codes bulk write",
             extra={
                 "table_name": table_name,
                 "dataframe_rows": len(df),
@@ -398,8 +444,9 @@ class SupplierCodesRepo:
 
         # Оптимизация типов данных
         df = self._optimize_dataframe_types(df)
-        logger.debug(
-            f"Начало записи в таблицу {table_name} ({len(df)} строк)"
+        logger.info(
+            "Writing supplier codes in bulk",
+            extra={"table_name": table_name, "row_count": len(df)},
         )
         try:
             # Загружаем данные в базу
@@ -415,13 +462,24 @@ class SupplierCodesRepo:
             # Создаем индексы после загрузки данных для производительности
             self._create_indexes(conn, table_name)
 
-            logger.debug(
-                "DataFrame загружен в базу данных",
-                extra={"table_name": table_name, "rows_loaded": rows_loaded},
+            logger.info(
+                "Supplier codes bulk write completed",
+                extra={
+                    "table_name": table_name,
+                    "rows_loaded": rows_loaded or 0,
+                },
             )
 
         except sqlite3.Error as e:
-            logger.error(f"Ошибка при записи в БД: {e}", exc_info=True)
+            logger.error(
+                "Supplier codes bulk write failed",
+                extra={
+                    "table_name": table_name,
+                    "row_count": len(df),
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
             error_message = f"Не удалось сохранить данные в базу: {e}"
             raise DatabaseLoadError(error_message) from e
         else:
@@ -455,7 +513,11 @@ class SupplierCodesRepo:
                     result_df[column] = result_df[column].astype(dtype)
                 except Exception as e:  # noqa: BLE001
                     logger.debug(
-                        f"Ошибка при конвертации колонки '{column}': {e}"
+                        "Supplier codes column conversion failed",
+                        extra={
+                            "column_name": column,
+                            "error_type": type(e).__name__,
+                        },
                     )
         return result_df
 
@@ -481,9 +543,18 @@ class SupplierCodesRepo:
         for index_sql in indexes:
             try:
                 conn.execute(index_sql)
-                logger.debug(f"Создан индекс: {index_sql}")
+                logger.debug(
+                    "Supplier codes index ensured",
+                    extra={"table_name": table_name},
+                )
             except sqlite3.Error as e:
-                logger.warning(f"Не удалось создать индекс: {e}")
+                logger.warning(
+                    "Failed to ensure supplier codes index",
+                    extra={
+                        "table_name": table_name,
+                        "error_type": type(e).__name__,
+                    },
+                )
 
     def get_supplier_data(self, supplier_id: int) -> pd.DataFrame:
         """Получает данные поставщика из SQLite.
@@ -494,7 +565,7 @@ class SupplierCodesRepo:
         Returns:
             DataFrame с колонками: code, category, subcategory
         """
-        conn = sqlite3.connect(settings.DB_SQLITE_PATH)
+        conn = sqlite3.connect(settings.sqlite.sqlite_file)
         query = """
         SELECT code, category, subcategory
         FROM supplier_product_codes

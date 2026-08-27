@@ -27,8 +27,11 @@ from common.exceptions.database import (
     DatabaseError,
     DatabaseLoadError,
 )
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
+
+
+logger = get_logger(__name__)
 
 
 if TYPE_CHECKING:
@@ -133,30 +136,51 @@ class DatabaseManager:
             DatabaseError: При ошибках конфигурации движка.
         """
         if self._initialized:
-            logger.warning("Database already initialized")
+            logger.warning("Database manager is already initialized")
             return
 
+        logger.info(
+            "Initializing database manager",
+            extra={
+                "pool_size": self._config.pool_size,
+                "max_overflow": self._config.max_overflow,
+                "is_postgres": self._config.is_postgres(),
+            },
+        )
         try:
             self._create_engines()
             await self._test_connection()
             self._create_session_factory()
             self._initialized = True
-            logger.info("Database connection initialized successfully")
+            logger.info(
+                "Database manager initialized",
+                extra={"is_postgres": self._config.is_postgres()},
+            )
         except OperationalError as e:
-            logger.error("Database connection failed: %s", e, exc_info=True)
+            logger.error(
+                "Database connection failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             raise DatabaseConnectionError(
                 message="Cannot connect to database",
                 details={"error": str(e)},
             ) from e
         except SQLAlchemyError as e:
-            logger.error("Database engine init error: %s", e, exc_info=True)
+            logger.error(
+                "Database engine initialization failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             raise DatabaseError(
                 message="Database engine initialization failed",
                 details={"error": str(e)},
             ) from e
         except Exception as e:
             logger.error(
-                "Unexpected error during DB init: %s", e, exc_info=True
+                "Unexpected database initialization error",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
             )
             raise DatabaseError(
                 message="Unexpected database initialization error",
@@ -267,20 +291,24 @@ class DatabaseManager:
         if not self._initialized:
             return
 
-        logger.info("Disposing database engine...")
+        logger.info("Closing database manager")
         try:
             if self._engine is not None:
                 await self._engine.dispose()
             if self._sync_engine is not None:
                 self._sync_engine.dispose()
         except SQLAlchemyError as e:
-            logger.error("Error during engine dispose: %s", e)
+            logger.error(
+                "Failed to close database engine",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
         finally:
             self._initialized = False
             self._engine = None
             self._sync_engine = None
             self._session_factory = None
-            logger.info("Database engine disposed")
+            logger.info("Database manager closed")
 
 
 # ===== Глобальный экземпляр менеджера =====
@@ -306,16 +334,25 @@ async def _run_schema_sync_action(action: str) -> None:
             await conn.run_sync(
                 lambda sync_conn: getattr(Base.metadata, action)(sync_conn)
             )
-        logger.info("Schema action '%s' completed successfully", action)
+        logger.info(
+            "Database schema action completed",
+            extra={"schema_action": action},
+        )
     except SQLAlchemyError as e:
-        logger.error("Failed to execute schema action '%s': %s", action, e)
+        logger.error(
+            "Database schema action failed",
+            extra={"schema_action": action, "error_type": type(e).__name__},
+            exc_info=True,
+        )
         raise DatabaseLoadError(
             message=f"Schema action '{action}' failed",
             details={"original_error": str(e)},
         ) from e
     except Exception as e:
         logger.error(
-            "Unexpected error during schema action '%s': %s", action, e
+            "Unexpected database schema action error",
+            extra={"schema_action": action, "error_type": type(e).__name__},
+            exc_info=True,
         )
         raise DatabaseLoadError(
             message=f"Unexpected error during schema action '{action}'",
@@ -359,28 +396,44 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         logger.debug("DB session committed successfully")
     except OperationalError as e:
         await session.rollback()
-        logger.error("Database connection error, rollback: %s", e)
+        logger.error(
+            "Database session rolled back after connection error",
+            extra={"error_type": type(e).__name__},
+            exc_info=True,
+        )
         raise DatabaseConnectionError(
             message="Database connection lost during operation",
             details={"original_error": str(e)},
         ) from e
     except IntegrityError as e:
         await session.rollback()
-        logger.error("Database integrity error, rollback: %s", e)
+        logger.error(
+            "Database session rolled back after integrity error",
+            extra={"error_type": type(e).__name__},
+            exc_info=True,
+        )
         raise DatabaseLoadError(
             message="Data integrity constraint violated",
             details={"original_error": str(e)},
         ) from e
     except SQLAlchemyDatabaseError as e:
         await session.rollback()
-        logger.error("Database execution error, rollback: %s", e)
+        logger.error(
+            "Database session rolled back after execution error",
+            extra={"error_type": type(e).__name__},
+            exc_info=True,
+        )
         raise DatabaseError(
             message="Database operation failed",
             details={"original_error": str(e)},
         ) from e
     except Exception as e:
         await session.rollback()
-        logger.error("Unexpected error in DB session, rollback: %s", e)
+        logger.error(
+            "Database session rolled back after unexpected error",
+            extra={"error_type": type(e).__name__},
+            exc_info=True,
+        )
         raise DatabaseError(
             message="Unexpected database error",
             details={"original_error": str(e)},
@@ -450,10 +503,17 @@ class DatabaseHealthCheck:
             async with engine.connect() as conn:
                 await conn.execute(sa.text("SELECT 1"))
         except (OperationalError, SQLAlchemyError, DatabaseError) as e:
-            logger.error("Health check failed: %s", e, exc_info=False)
+            logger.exception(
+                "Database health check failed",
+                extra={"error_type": type(e).__name__},
+            )
             return False
-        except Exception as e:  # noqa: BLE001
-            logger.error("Unexpected health check error: %s", e)
+        except Exception as e:
+            logger.error(
+                "Unexpected database health check error",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             return False
         else:
             return True

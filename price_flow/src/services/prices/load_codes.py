@@ -3,7 +3,7 @@ import shutil
 import uuid
 
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
 import aiofiles.os as aios
 
@@ -18,7 +18,7 @@ from common.exceptions.file import (
     FileUploadError,
     ZipExtractionError,
 )
-from common.logger import logger
+from core.logger import get_logger
 
 # from repositories.supplier_codes_repo import (
 #     SupplierCodesRepo,
@@ -31,6 +31,9 @@ from repositories.supplier_product_codes_repo import (
 from schemas.response_schemas import SuccessResponse
 from services.file_uploader import FileUploader, get_file_uploader
 from services.helpers import extract_zip
+
+
+logger = get_logger(__name__)
 
 
 class LoaderCodes:
@@ -65,10 +68,16 @@ class LoaderCodes:
         extract_dir: Path | None = None
 
         try:
+            logger.info(
+                "Starting supplier code import",
+                extra={"file_name": file.filename},
+            )
             # 1. Загрузка ZIP файла
             upload_response = await self.file_uploader.upload_file(file)
             self._validate_upload_response(upload_response)
-            zip_file_path = Path(upload_response.details["file_path"])
+            details = upload_response.details
+            assert details is not None  # проверено в _validate_upload_response
+            zip_file_path = Path(details["file_path"])
 
             # 2. Подготовка директории для распаковки
             # Создаем временную папку с UUID, чтобы избежать конфликтов
@@ -95,6 +104,13 @@ class LoaderCodes:
                 await self.supplier_codes_repo.load_from_csv_with_truncate(
                     str(csv_file_path)
                 )
+            )
+            logger.info(
+                "Supplier code import completed",
+                extra={
+                    "source_file_name": csv_file_path.name,
+                    "candidate_file_count": len(all_files),
+                },
             )
 
             return SuccessResponse(
@@ -207,9 +223,7 @@ class LoaderCodes:
                 f"Error extracting archive: {zip_path.name}",
             ) from e
 
-    async def load_file_to_db(
-        self, unpacked_file_path: str
-    ) -> dict[str, Any]:
+    async def load_file_to_db(self, unpacked_file_path: str) -> dict[str, Any]:
         """
         Загружает данные из CSV-файла в таблицу БД.
 
@@ -219,10 +233,9 @@ class LoaderCodes:
         Returns:
             Результат загрузки в виде словаря.
         """
-        result = await self.supplier_codes_repo.load_data(
-            unpacked_file_path, "supplier_product_codes"
+        return await self.supplier_codes_repo.load_from_csv_with_truncate(
+            unpacked_file_path
         )
-        return cast("dict[str, Any]", result)
 
 
 # ===== Вспомогательные асинхронные функции для работы с фс =====
@@ -242,14 +255,14 @@ async def remove_file_async(file_path: str | Path) -> bool:
 
     try:
         await aios.remove(path)
-        logger.info("File removed", extra={"path": str(path)})
+        logger.debug("File removed", extra={"path": str(path)})
     except FileNotFoundError:
         logger.debug(
             "File not found, skipping removal", extra={"path": str(path)}
         )
         return False
     except OSError as e:
-        logger.error(
+        logger.exception(
             "Failed to remove file",
             extra={"path": str(path), "error": str(e)},
         )
@@ -276,14 +289,14 @@ async def remove_directory_async(dir_path: str | Path) -> bool:
 
     try:
         await asyncio.to_thread(_rmdir_sync)
-        logger.info("Directory removed", extra={"path": str(path)})
+        logger.debug("Directory removed", extra={"path": str(path)})
     except FileNotFoundError:
         logger.debug(
             "Directory not found, skipping removal", extra={"path": str(path)}
         )
         return False
     except OSError as e:
-        logger.error(
+        logger.exception(
             "Failed to remove directory",
             extra={"path": str(path), "error": str(e)},
         )

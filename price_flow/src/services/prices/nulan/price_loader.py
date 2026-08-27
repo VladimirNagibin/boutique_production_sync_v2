@@ -1,9 +1,7 @@
 import asyncio
-import datetime
 import shutil
 import uuid
 
-from datetime import UTC
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, cast
 
@@ -28,7 +26,7 @@ from common.exceptions.file import (
     FileUploadError,
     ZipExtractionError,
 )
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 from repositories.supplier_clothing_repo import (
     SupplierClothingRepo,
@@ -55,6 +53,9 @@ from .config import (
     PRODUCT_START_REMAINS_COLUMN,
     TEMP_FOLDER_NAME,
 )
+
+
+logger = get_logger(__name__)
 
 
 FOLDER = "uploads/"
@@ -95,20 +96,35 @@ class PriceLoader:
         #     self.supplier_id, 100029
         # )
         try:
-            logger.info("Запуск синхронизации прайс-листов")
+            logger.info(
+                "Starting supplier price synchronization",
+                extra={"supplier_id": self.supplier_id},
+            )
             await self._fetch_and_process_directory(self.public_key)
             await self._parse_files()
             # price_as_is = self.temp_dir / "price_as_is.xlsx"
             df = self.supplier_clothing_repo.save_price_as_is()
         except Exception as e:
             logger.error(
-                "Критическая ошибка при синхронизации", exc_info=True
+                "Supplier price synchronization failed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
             )
             error_code = "PROCESS_PRICE_ERROR"
             raise DownloadError(
                 error_code, f"Сбой синхронизации: {e!s}"
             ) from e
         else:
+            logger.info(
+                "Supplier price synchronization completed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "result_row_count": len(df),
+                },
+            )
             return df
 
     async def _fetch_and_process_directory(self, public_url: str) -> None:
@@ -117,6 +133,10 @@ class PriceLoader:
         """
         items = await asyncio.to_thread(
             self._fetch_directory_content_sync, public_url
+        )
+        logger.info(
+            "Supplier directory metadata loaded",
+            extra={"supplier_id": self.supplier_id, "item_count": len(items)},
         )
         await self._process_directory_items(items)
 
@@ -132,9 +152,7 @@ class PriceLoader:
         try:
             response = requests.get(self.api_url, params=params, timeout=1000)
             if response.status_code != 200:
-                error_message = (
-                    f"Ошибка доступа к API: {response.status_code}"
-                )
+                error_message = f"Ошибка доступа к API: {response.status_code}"
                 raise ApiError(error_message)
 
             data: dict[str, Any] = response.json()
@@ -159,10 +177,23 @@ class PriceLoader:
             # items = data.get("_embedded", {}).get("items", [])
 
         except requests.RequestException as e:
+            logger.exception(
+                "Supplier directory request failed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "error_type": type(e).__name__,
+                },
+            )
             error_message = f"Ошибка запроса к API: {e!s}"
             raise ApiError(error_message) from e
         except KeyError as e:
-            logger.error(f"Ошибка структуры ответа API: {e}")
+            logger.exception(
+                "Supplier directory response structure is invalid",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "error_type": type(e).__name__,
+                },
+            )
             raise ApiError(error_code, "Некорректный ответ API") from e
         else:
             return cast("list[dict[str, Any]]", items)
@@ -194,8 +225,15 @@ class PriceLoader:
         """
         try:
             await asyncio.to_thread(self._download_file_sync, url, filename)
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"Error load {filename}: {url} {e}")
+        except Exception as e:
+            logger.exception(
+                "Supplier price file download failed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "file_name": filename,
+                    "error_type": type(e).__name__,
+                },
+            )
 
     def _download_file_sync(self, url: str, original_filename: str) -> None:
         """
@@ -210,17 +248,28 @@ class PriceLoader:
         save_path: Path = self.temp_dir / target_filename
         # 2. Выполняем запрос с обработкой исключений
         try:
-            logger.debug(f"Загрузка файла: {target_filename} из {url}")
+            logger.info(
+                "Downloading supplier price file",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "file_name": target_filename,
+                },
+            )
 
             # 2. Скачивание
             response = requests.get(url, stream=True, timeout=1000)
             response.raise_for_status()
         except requests.RequestException as e:
             error_msg = f"Request failed for {target_filename}: {e}"
-            logger.error(error_msg)
-            error_code = (
-                f"DOWNLOAD_FAILED status code: {response.status_code}"
+            logger.exception(
+                "Supplier price file request failed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "file_name": target_filename,
+                    "error_type": type(e).__name__,
+                },
             )
+            error_code = f"DOWNLOAD_FAILED status code: {response.status_code}"
             raise DownloadError(
                 error_code, error_msg, details={"url": url}
             ) from e
@@ -231,15 +280,38 @@ class PriceLoader:
                     f.write(chunk)
         except OSError as e:
             error_msg = f"File write error for {original_filename}"
-            logger.error(error_msg, exc_info=True)
+            logger.error(
+                "Supplier price file write failed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "file_name": target_filename,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
             error_code = "FILE_WRITE_ERROR"
             raise DownloadError(error_code, error_msg) from e
         except Exception as e:
             # Ловим всё остальное, но логируем и пробрасываем
-            logger.error(f"Unexpected error: {e}", exc_info=True)
+            logger.error(
+                "Unexpected supplier price download error",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "file_name": target_filename,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
             raise
 
-        logger.info(f"File successfully saved: {save_path}")
+        logger.info(
+            "Supplier price file downloaded",
+            extra={
+                "supplier_id": self.supplier_id,
+                "file_name": target_filename,
+                "size_bytes": save_path.stat().st_size,
+            },
+        )
 
     async def _parse_files(self) -> None:
         code_max = await self.supplier_clothing_repo.get_max_code_async(
@@ -249,13 +321,33 @@ class PriceLoader:
         await self.supplier_clothing_repo.clear_supplier_price(
             self.supplier_id
         )
+        logger.info(
+            "Starting supplier price file processing",
+            extra={
+                "supplier_id": self.supplier_id,
+                "file_count": len(FILENAME_MAPPING),
+            },
+        )
         for _, file in FILENAME_MAPPING.items():
             await self._parse_file(self.temp_dir / file, current_code)
             # break
+        logger.info(
+            "Supplier price file processing completed",
+            extra={
+                "supplier_id": self.supplier_id,
+                "file_count": len(FILENAME_MAPPING),
+            },
+        )
 
     async def _parse_file(self, file: str | Path, current_code: int) -> None:
-        print(datetime.datetime.now(UTC).time())
-        print(f"----------- {file} ---------------")
+        file_path = Path(file)
+        logger.info(
+            "Processing supplier price file",
+            extra={
+                "supplier_id": self.supplier_id,
+                "file_name": file_path.name,
+            },
+        )
         repo = self.supplier_clothing_repo
         inf = pd.read_excel(file, skiprows=PRODUCT_SKIP_HEAD_ROWS)
         sizes: list[str] = []
@@ -268,9 +360,7 @@ class PriceLoader:
                 if file == self.temp_dir / FILE_CHANGE:
                     product_name = product_name.replace("cont", "Conte")
                 product_price = s[PRODUCT_PRICE_COLUMN]
-                product_price = (
-                    0 if np.isnan(product_price) else product_price
-                )
+                product_price = 0 if np.isnan(product_price) else product_price
                 sizes.clear()
                 for i in PRODUCT_SIZE_RANGE:
                     size = s[i]
@@ -282,13 +372,11 @@ class PriceLoader:
                     for i, size in enumerate(sizes):
                         remains = s[i + PRODUCT_START_REMAINS_COLUMN]
                         if isinstance(remains, str):
-                            supplier_product = (
-                                await repo.get_supplier_product(
-                                    self.supplier_id,
-                                    product_name,
-                                    size,
-                                    product_color,
-                                )
+                            supplier_product = await repo.get_supplier_product(
+                                self.supplier_id,
+                                product_name,
+                                size,
+                                product_color,
                             )
                             if supplier_product:
                                 code = supplier_product.code
@@ -320,6 +408,14 @@ class PriceLoader:
                             price_supplier.append(supplier_product_price)
 
         await repo.add_supplier_price(price_supplier)
+        logger.info(
+            "Supplier price file processed",
+            extra={
+                "supplier_id": self.supplier_id,
+                "file_name": file_path.name,
+                "price_record_count": len(price_supplier),
+            },
+        )
         # return current_code
 
     async def load_products(self, file: UploadFile) -> UploadResult:
@@ -331,10 +427,19 @@ class PriceLoader:
         extract_dir: Path | None = None
 
         try:
+            logger.info(
+                "Starting uploaded supplier price processing",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "file_name": file.filename,
+                },
+            )
             # 1. Загрузка ZIP файла
             upload_response = await self.file_uploader.upload_file(file)
             self._validate_upload_response(upload_response)
-            zip_file_path = Path(upload_response.details["file_path"])
+            details = upload_response.details
+            assert details is not None  # проверено в _validate_upload_response
+            zip_file_path = Path(details["file_path"])
 
             # 2. Подготовка директории для распаковки
             # Создаем временную папку с UUID, чтобы избежать конфликтов
@@ -364,7 +469,13 @@ class PriceLoader:
             self.save_price_for_load(price_filename)
 
             # 7. Конвертация
-            logger.info("Конвертация Excel файла...")
+            logger.info(
+                "Uploading processed price to converter",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "file_name": price_filename.name,
+                },
+            )
             upload_result = self.converter.upload_file(price_filename)
         except (
             # FileSizeError,
@@ -374,15 +485,34 @@ class PriceLoader:
             DataProcessingError,
         ) as e:
             # Ошибки бизнес-логики, логируем warning и пробрасываем
-            logger.warning(f"Ошибка обработки файла: {e}")
+            logger.warning(
+                "Uploaded supplier price processing failed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "error_type": type(e).__name__,
+                },
+            )
             raise
 
         except Exception as e:
             # Непредвиденные ошибки
-            logger.exception(f"Критическая ошибка в load_file: {e}")
+            logger.exception(
+                "Unexpected uploaded supplier price processing error",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "error_type": type(e).__name__,
+                },
+            )
             error_message = "Внутренняя ошибка при обработке файла"
             raise RuntimeError(error_message) from e
         else:
+            logger.info(
+                "Uploaded supplier price processing completed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "converter_success": upload_result.success,
+                },
+            )
             return upload_result
         finally:
             # 6. Гарантированная очистка ресурсов
@@ -411,7 +541,13 @@ class PriceLoader:
 
         try:
             await asyncio.to_thread(_unzip_task)
-            logger.info(f"Файл распакован в: {extract_to}")
+            logger.info(
+                "Supplier price archive extracted",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "archive_name": zip_path.name,
+                },
+            )
 
         except (FileAppNotFoundError, ZipExtractionError):
             # Если это наши кастомные исключения — просто пробрасываем их выше
@@ -419,7 +555,12 @@ class PriceLoader:
 
         except Exception as e:
             logger.error(
-                f"Ошибка распаковки архива {zip_path.name}: {e}",
+                "Supplier price archive extraction failed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "archive_name": zip_path.name,
+                    "error_type": type(e).__name__,
+                },
                 exc_info=True,
             )
             error_message = f"Ошибка при распаковке архива: {zip_path.name}"
@@ -449,13 +590,10 @@ class PriceLoader:
             price = s.price
             if brand != brand_current:
                 brand = brand_current
-                # print(f'{brand} =================')
                 price_all.append(["", brand, ""])
             if subgroup != subgroup_current:
                 subgroup = subgroup_current
                 price_all.append(["", subgroup, ""])
-                # print(f'{subgroup} ---------------')
-            # print(code, name, price)
             price_all.append([code, name, price])
         df = pd.DataFrame(price_all, columns=["code", "name", "price"])
         df.to_excel(excel_file_path, index=False)
@@ -471,15 +609,20 @@ async def remove_file_async(file_path: str | Path) -> bool:
     """
     path = Path(file_path)
 
-    if not path.exists():
-        logger.debug(f"Файл не найден, пропускаем удаление: {path}")
-        return False
-
     try:
         await aios.remove(path)
-        logger.info(f"Файл успешно удален: {path}")
+        logger.debug("File removed", extra={"path": str(path)})
+    except FileNotFoundError:
+        logger.debug(
+            "File not found, skipping removal",
+            extra={"path": str(path)},
+        )
+        return False
     except OSError as e:
-        logger.error(f"Ошибка при удалении файла {path}: {e}")
+        logger.exception(
+            "File removal failed",
+            extra={"path": str(path), "error_type": type(e).__name__},
+        )
         return False
     else:
         return True
@@ -490,17 +633,24 @@ async def remove_directory_async(dir_path: str | Path) -> bool:
     Рекурсивно удаляет директорию в отдельном потоке.
     """
     path = Path(dir_path)
-    if not path.exists():
-        return False
 
     def _rmdir_sync() -> None:
         shutil.rmtree(path)
 
     try:
         await asyncio.to_thread(_rmdir_sync)
-        logger.info(f"Директория удалена: {path}")
+        logger.debug("Directory removed", extra={"path": str(path)})
+    except FileNotFoundError:
+        logger.debug(
+            "Directory not found, skipping removal",
+            extra={"path": str(path)},
+        )
+        return False
     except OSError as e:
-        logger.error(f"Ошибка удаления директории {path}: {e}")
+        logger.exception(
+            "Directory removal failed",
+            extra={"path": str(path), "error_type": type(e).__name__},
+        )
         return False
     else:
         return True

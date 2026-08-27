@@ -53,7 +53,7 @@ class PriceExtraMixin:
 # ===== Модели =====
 
 
-class SupplierProductCode(Base, CommonFieldsMixin):  # type: ignore[misc]
+class SupplierProductCode(Base, CommonFieldsMixin):
     __tablename__ = "supplier_product_codes"
 
     __table_args__ = (
@@ -72,7 +72,7 @@ class SupplierProductCode(Base, CommonFieldsMixin):  # type: ignore[misc]
 
 
 class SupplierClothingCode(
-    Base,  # type: ignore[misc]
+    Base,
     CommonFieldsMixin,
     ProductDetailsMixin,
     ClothingExtraMixin,
@@ -93,7 +93,7 @@ class SupplierClothingCode(
 
 
 class SupplierPrice(
-    Base,  # type: ignore[misc]
+    Base,
     CommonFieldsMixin,
     ProductDetailsMixin,
     PriceExtraMixin,

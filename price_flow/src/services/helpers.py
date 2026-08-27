@@ -4,7 +4,10 @@ from pathlib import Path
 from typing import Final
 
 from common.exceptions.file import FileAppNotFoundError, ZipExtractionError
-from common.logger import logger
+from core.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 # ===== Константы =====
@@ -67,8 +70,16 @@ def _validate_file(path: Path) -> None:
         FileAppNotFoundError: Если файл отсутствует или не является файлом.
     """
     if not path.exists():
+        logger.warning(
+            "ZIP archive not found",
+            extra={"zip_path": str(path)},
+        )
         raise FileAppNotFoundError(path, f"Файл не найден: {path}")
     if not path.is_file():
+        logger.warning(
+            "ZIP archive path is not a file",
+            extra={"zip_path": str(path)},
+        )
         raise FileAppNotFoundError(path, f"Путь не является файлом: {path}")
 
 
@@ -113,6 +124,15 @@ def _perform_extraction(
             zip_path,
             f"Bad ZIP file: {e}",
         )
+    except OSError as e:
+        logger.exception(
+            "ZIP extraction filesystem error",
+            extra={
+                "zip_path": str(zip_path),
+                "error_type": type(e).__name__,
+            },
+        )
+        raise
 
 
 def _handle_runtime_error(zip_path: Path, error: RuntimeError) -> None:

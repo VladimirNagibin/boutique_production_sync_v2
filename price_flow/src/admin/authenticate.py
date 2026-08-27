@@ -4,16 +4,26 @@ from typing import Any
 from fastapi import Request
 from jose import jwt
 from jose.exceptions import JWTError
-
-# from pydantic import SecretStr
 from sqladmin.authentication import AuthenticationBackend
 
 from common.exceptions.auth import TokenCreationError
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 
 
-class BasicAuthBackend(AuthenticationBackend):  # type: ignore
+logger = get_logger(__name__)
+
+
+def _get_admin_password() -> str:
+    """Возвращает настроенный пароль администратора."""
+    password = settings.auth.admin_password
+    if password is None:
+        msg = "Admin password is not configured"
+        raise ValueError(msg)
+    return password.get_secret_value()
+
+
+class BasicAuthBackend(AuthenticationBackend):  # type: ignore[misc, unused-ignore]
     """
     Аутентификационный бекенд для SQLAdmin с использованием JWT.
 
@@ -23,7 +33,7 @@ class BasicAuthBackend(AuthenticationBackend):  # type: ignore
     def __init__(
         self,
         username: str = settings.auth.admin_username,
-        password: str = settings.auth.admin_password.get_secret_value(),
+        password: str = _get_admin_password(),
         secret_key: str = settings.auth.secret_key.get_secret_value(),
         algorithm: str = settings.auth.algorithm,
         token_expiry_minutes: int = settings.auth.access_token_expire_minutes,
@@ -46,7 +56,7 @@ class BasicAuthBackend(AuthenticationBackend):  # type: ignore
         self.token_expiry_minutes = token_expiry_minutes
         logger.info(
             "Admin authentication backend initialized",
-            extra={"username": username, "algorithm": algorithm},
+            extra={"algorithm": algorithm},
         )
 
     async def login(self, request: Request) -> bool:
@@ -71,8 +81,8 @@ class BasicAuthBackend(AuthenticationBackend):  # type: ignore
                 username_validate, password_validate
             ):
                 logger.warning(
-                    "Failed login attempt",
-                    extra={"username": username_validate or "unknown"},
+                    "Admin login rejected",
+                    extra={"reason": "invalid_credentials"},
                 )
                 return False
 
@@ -84,10 +94,10 @@ class BasicAuthBackend(AuthenticationBackend):  # type: ignore
                 return False
             token = self._create_jwt_token(username_validate)
             request.session.update({"token": token})
-        except Exception as e:  # noqa: BLE001
+        except Exception as exc:
             logger.error(
-                "Login error",
-                extra={"error": str(e)},
+                "Admin login failed",
+                extra={"error_type": type(exc).__name__},
                 exc_info=True,
             )
             return False
@@ -107,10 +117,10 @@ class BasicAuthBackend(AuthenticationBackend):  # type: ignore
         try:
             request.session.clear()
             logger.info("User logged out successfully")
-        except Exception as e:  # noqa: BLE001
+        except Exception as exc:
             logger.error(
-                "Logout error",
-                extra={"error": str(e)},
+                "Admin logout failed",
+                extra={"error_type": type(exc).__name__},
                 exc_info=True,
             )
             return False
@@ -129,22 +139,28 @@ class BasicAuthBackend(AuthenticationBackend):  # type: ignore
         """
         token = request.session.get("token")
         if not token:
-            logger.debug("No token found in session")
+            logger.debug(
+                "Admin authentication rejected",
+                extra={"reason": "missing_session_token"},
+            )
             return False
         try:
             username = self._validate_jwt_token(token)
             if not username:
-                logger.debug("Token validation failed")
+                logger.debug(
+                    "Admin authentication rejected",
+                    extra={"reason": "invalid_session_token"},
+                )
                 return False
 
             logger.debug(
                 "Authentication successful",
                 extra={"username": username},
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as exc:
             logger.error(
-                "Authentication error",
-                extra={"error": str(e)},
+                "Admin authentication failed",
+                extra={"error_type": type(exc).__name__},
                 exc_info=True,
             )
             return False
@@ -166,7 +182,12 @@ class BasicAuthBackend(AuthenticationBackend):  # type: ignore
             return None
         try:
             return self._validate_jwt_token(token)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:
+            logger.error(
+                "Failed to resolve current admin user",
+                extra={"error_type": type(exc).__name__},
+                exc_info=True,
+            )
             return None
 
     # ----- Приватные методы -----
@@ -236,17 +257,17 @@ class BasicAuthBackend(AuthenticationBackend):  # type: ignore
                 algorithm=self.algorithm,
             )
 
-        except Exception as e:
+        except Exception as exc:
             logger.error(
                 "Token creation failed",
-                extra={"error": str(e)},
+                extra={"error_type": type(exc).__name__},
                 exc_info=True,
             )
             raise TokenCreationError(
                 error_code="TOKEN_CREATION_ERROR",
                 message="Could not create authentication token",
-                details={"algorithm": self._algorithm},
-            ) from e
+                details={"algorithm": self.algorithm},
+            ) from exc
 
     def _validate_jwt_token(self, token: str) -> str | None:
         """
@@ -268,7 +289,7 @@ class BasicAuthBackend(AuthenticationBackend):  # type: ignore
             if not username:
                 logger.warning(
                     "Token missing 'sub' claim",
-                    extra={"token_preview": token[:10] + "..."},
+                    extra={"reason": "missing_subject_claim"},
                 )
                 return None
 
@@ -284,20 +305,20 @@ class BasicAuthBackend(AuthenticationBackend):  # type: ignore
             if username != self.username:
                 logger.warning(
                     "Token username mismatch",
-                    extra={"expected": self.username, "actual": username},
+                    extra={"reason": "unexpected_subject"},
                 )
                 return None
 
-        except JWTError as e:
+        except JWTError as exc:
             logger.warning(
                 "JWT validation error",
-                extra={"error": str(e)},
+                extra={"error_type": type(exc).__name__},
             )
             return None
-        except Exception as e:  # noqa: BLE001
+        except Exception as exc:
             logger.error(
                 "Unexpected token validation error",
-                extra={"error": str(e)},
+                extra={"error_type": type(exc).__name__},
                 exc_info=True,
             )
             return None

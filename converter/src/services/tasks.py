@@ -1,49 +1,61 @@
 import asyncio
 import os
+import time
 from typing import Any, Awaitable, Callable
 
 import aiofiles.os as aios
-
-# import redis.asyncio as asyncio_redis
+from redis import exceptions as redis_errors
 from redis.asyncio.client import PubSub
-# from redis.asyncio.client import Redis as ClientRedis
 
-from core.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 from db.redis_client import RedisClient, get_redis
 from services.converter_files import convert_xlsx_to_xls
 
+logger = get_logger(__name__)
+
 
 async def delete_file_async(file_path: str) -> None:
+    """Удаляет файл асинхронно, если он существует."""
+    file_name = os.path.basename(file_path)
     try:
-        # Проверяем, существует ли файл
         if not await aios.path.exists(file_path):
-            logger.warning(f"Файл {file_path} не найден")
+            logger.debug("File already absent", extra={"file_name": file_name})
             return
 
-        # Асинхронное удаление файла
         await aios.remove(file_path)
-        logger.debug(f"Файл {file_path} успешно удален")
-    except Exception as e:
-        logger.error(f"Ошибка при удалении файла {file_path}: {e}")
+        logger.debug("File deleted", extra={"filename": file_name})
+    except asyncio.CancelledError:
+        logger.info("File deletion cancelled", extra={"filename": file_name})
+        raise
+    except Exception:
+        logger.exception("File deletion failed", extra={"filename": file_name})
 
 
 async def listen_to_redis_events() -> None:
+    """Слушает события Redis и запускает конвертацию файлов."""
     pubsub: PubSub | None = None
     redis_client: RedisClient = await get_redis()
     if not redis_client.redis:
-        logger.error("Redis не инициализирован для listen_to_redis_events")
+        logger.error(
+            "Redis connection unavailable for event listener",
+            extra={"component": "redis_listener"},
+        )
         return
-    # client: ClientRedis = asyncio_redis.from_url(
-    #     f"redis://:{settings.REDIS_PASSWORD}@{settings.REDIS_HOST}:{settings.REDIS_PORT}"
-    # )
+
     try:
         pubsub = redis_client.redis.pubsub()
         if not pubsub:
-            logger.error("pubsub не определён для listen_to_redis_events")
+            logger.error(
+                "Redis pubsub unavailable for event listener",
+                extra={"component": "redis_listener"},
+            )
             return
         await pubsub.psubscribe("__keyevent@0__:set", "__keyevent@0__:expired")
-        logger.info("Слушатель событий Redis запущен...")
+        logger.info(
+            "Redis event listener started",
+            extra={"component": "redis_listener"},
+        )
 
         async for message in pubsub.listen():
             try:
@@ -51,7 +63,6 @@ async def listen_to_redis_events() -> None:
                     channel = message["channel"].decode("utf-8")
                     key = message["data"].decode("utf-8")
 
-                    # ИСПРАВЛЕНИЕ: Убрали сложное форматирование через %s
                     in_path = os.path.join(
                         settings.BASE_DIR, settings.UPLOAD_DIR, "in", key
                     )
@@ -62,7 +73,10 @@ async def listen_to_redis_events() -> None:
                     if channel == "__keyevent@0__:set":
                         value = await redis_client.get(name=key)
                         if value and int(value.decode("utf-8")) == settings.LOAD:
-                            logger.info(f"Обнаружен файл на конвертацию: {key}")
+                            logger.info(
+                                "Conversion event received",
+                                extra={"token": key},
+                            )
                             await convert_xlsx_to_xls(key)
                             await redis_client.set(
                                 name=key,
@@ -73,35 +87,59 @@ async def listen_to_redis_events() -> None:
 
                     elif channel == "__keyevent@0__:expired":
                         logger.debug(
-                            f"Истек срок жизни ключа (файл готов к выдаче/удалению): {key}"
+                            "Converted file expired",
+                            extra={"token": key},
                         )
                         await delete_file_async(out_path)
-            except Exception as e:
+            except redis_errors.ConnectionError as error:
                 logger.error(
-                    f"Ошибка в цикле обработки событий Redis: {e}", exc_info=True
+                    "Redis connection lost while processing event",
+                    extra={
+                        "component": "redis_listener",
+                        "error_type": type(error).__name__,
+                    },
+                )
+                return
+            except Exception:
+                logger.exception(
+                    "Redis event processing failed",
+                    extra={"component": "redis_listener"},
                 )
 
     except asyncio.CancelledError:
-        # Задача была отменена – корректно закрываем подписку
-        # if pubsub:
-        #     await pubsub.unsubscribe()
-        #     await pubsub.close()
-        # Пробрасываем исключение, чтобы признать отмену
+        logger.info(
+            "Redis event listener cancelled",
+            extra={"component": "redis_listener"},
+        )
         raise
 
-    except ConnectionError:
-        # Соединение с Redis закрыто – завершаем задачу без ошибки
-        # (например, если Redis перезапускается или приложение останавливается)
-        pass
+    except redis_errors.ConnectionError as error:
+        logger.error(
+            "Redis connection unavailable for event listener",
+            extra={
+                "component": "redis_listener",
+                "error_type": type(error).__name__,
+            },
+        )
 
     finally:
-        # Дополнительная очистка, если pubsub ещё открыт
         if pubsub is not None:
             try:
                 await pubsub.unsubscribe()
                 await pubsub.close()
+            except redis_errors.ConnectionError as error:
+                logger.warning(
+                    "Redis connection unavailable during listener cleanup",
+                    extra={
+                        "component": "redis_listener",
+                        "error_type": type(error).__name__,
+                    },
+                )
             except Exception:
-                pass
+                logger.exception(
+                    "Redis listener cleanup failed",
+                    extra={"component": "redis_listener"},
+                )
 
 
 async def delete_files_by_condition(
@@ -116,34 +154,88 @@ async def delete_files_by_condition(
     :param condition: Функция-условие,
     которая принимает имя файла и возвращает bool.
     """
+    started_at = time.perf_counter()
+    deleted_count = 0
+    folder_name = os.path.basename(folder_path)
     try:
         if not await aios.path.exists(folder_path):
+            logger.info(
+                "File cleanup directory absent",
+                extra={
+                    "folder": folder_name,
+                    "deleted_count": deleted_count,
+                    "duration_seconds": time.perf_counter() - started_at,
+                },
+            )
             return
 
-        # Получаем список файлов в папке
         files = await aios.listdir(folder_path)
 
-        # Асинхронно обрабатываем каждый файл
         for file_name in files:
             file_path = os.path.join(folder_path, file_name)
 
-            # Проверяем, является ли объект файлом
             if await aios.path.isfile(file_path):
-                # Проверяем условие
                 if not await condition(file_name):
-                    logger.debug(f"Удаление файла: {file_path}")
                     await aios.remove(file_path)
-    except Exception as e:
-        logger.error(f"Ошибка при очистке файлов в {folder_path}: {e}")
+                    deleted_count += 1
+        logger.info(
+            "File cleanup directory completed",
+            extra={
+                "folder": folder_name,
+                "deleted_count": deleted_count,
+                "duration_seconds": time.perf_counter() - started_at,
+            },
+        )
+    except asyncio.CancelledError:
+        logger.info(
+            "File cleanup directory cancelled",
+            extra={
+                "folder": folder_name,
+                "deleted_count": deleted_count,
+                "duration_seconds": time.perf_counter() - started_at,
+            },
+        )
+        raise
+    except redis_errors.ConnectionError as error:
+        logger.error(
+            "Redis connection unavailable during file cleanup",
+            extra={
+                "folder": folder_name,
+                "deleted_count": deleted_count,
+                "duration_seconds": time.perf_counter() - started_at,
+                "error_type": type(error).__name__,
+            },
+        )
+    except Exception:
+        logger.exception(
+            "File cleanup directory failed",
+            extra={
+                "folder": folder_name,
+                "deleted_count": deleted_count,
+                "duration_seconds": time.perf_counter() - started_at,
+            },
+        )
 
 
 async def clear_files() -> None:
-    logger.info("start clear files")
+    """Удаляет файлы, для которых больше нет ключей Redis."""
+    started_at = time.perf_counter()
+    logger.info("Scheduled file cleanup started")
     redis: RedisClient = await get_redis()
     in_dir = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "in")
     out_dir = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "out")
 
-    await delete_files_by_condition(in_dir, lambda f: redis.exists(f))
-    await delete_files_by_condition(out_dir, lambda f: redis.exists(f))
-
-    logger.info("finish clear files")
+    try:
+        await delete_files_by_condition(in_dir, lambda f: redis.exists(f))
+        await delete_files_by_condition(out_dir, lambda f: redis.exists(f))
+    except asyncio.CancelledError:
+        logger.info(
+            "Scheduled file cleanup cancelled",
+            extra={"duration_seconds": time.perf_counter() - started_at},
+        )
+        raise
+    else:
+        logger.info(
+            "Scheduled file cleanup completed",
+            extra={"duration_seconds": time.perf_counter() - started_at},
+        )

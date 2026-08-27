@@ -4,10 +4,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, Response
 
 from api.v1.deps import verify_api_key
-from services.portals import UpdatingPortalServis, get_portal_service
+from core.logger import get_logger
 from schemas.v1.entity import EtlTable, ExportTable, UpdTable, UpdPortal
+from services.portals import UpdatingPortalServis, get_portal_service
 
 
+logger = get_logger(__name__)
 upd_portal = APIRouter(dependencies=[Depends(verify_api_key)])
 
 
@@ -20,6 +22,14 @@ def reload_port(
     result: dict[str, Any] = upd_service.etl(page)
     if result.get("error"):
         response.status_code = HTTPStatus.BAD_REQUEST
+    logger.info(
+        "ETL endpoint completed",
+        extra={
+            "page": page,
+            "has_error": bool(result.get("error")),
+            "status_code": response.status_code,
+        },
+    )
     return EtlTable(**result)
 
 
@@ -33,6 +43,15 @@ def export_port(
     err = [result["error"] for result in results if result.get("error")]
     if err:
         response.status_code = HTTPStatus.BAD_REQUEST
+    logger.info(
+        "Export endpoint completed",
+        extra={
+            "portal": portal,
+            "part_count": len(results),
+            "error_count": len(err),
+            "status_code": response.status_code,
+        },
+    )
     return [ExportTable(**result) for result in results]
 
 
@@ -47,4 +66,13 @@ def upt_port(
     upd_portal = result["update_portal"]
     if (upd_portal != "success") or (not result["update_tables_result"]):
         response.status_code = HTTPStatus.BAD_REQUEST
+    logger.info(
+        "Portal update endpoint completed",
+        extra={
+            "portal": portal,
+            "table_count": len(upd_tables),
+            "portal_status": upd_portal,
+            "status_code": response.status_code,
+        },
+    )
     return UpdPortal(upd_tables=upd_tables, upd_portal=upd_portal)

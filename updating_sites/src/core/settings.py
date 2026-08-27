@@ -1,14 +1,6 @@
 import os
-from logging import config as logging_config
 
-from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-from core.logger import LOGGING
-
-
-load_dotenv()
-logging_config.dictConfig(LOGGING)
 
 
 class SettingsPortal(BaseSettings):
@@ -70,6 +62,9 @@ class Settings(BaseSettings):
 
     PROJECT_NAME: str = "project"
     APP_RELOAD: bool = False
+    APP_LOG_LEVEL: str = "DEBUG"
+    APP_LOG_TO_FILE: bool = True
+
     ENCRYPTION_KEY: str = "ENCRYPTION_KEY"
     CLIENT_SECRET: str = "CLIENT_SECRET"
     SECRET_KEY: str = "SECRET_KEY"

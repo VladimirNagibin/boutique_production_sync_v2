@@ -13,7 +13,7 @@ from .base_admin import BaseAdmin
 from .mixins import COLUMN_LABELS
 
 
-class SupplierProductCodeAdmin(BaseAdmin, model=SupplierProductCode):  # type: ignore[call-arg]
+class SupplierProductCodeAdmin(BaseAdmin, model=SupplierProductCode):  # type: ignore[call-arg, unused-ignore]
     name = "Код поставщика"
     name_plural = "Все коды поставщиков"
     category = "Коды"
@@ -83,7 +83,7 @@ class SupplierProductCodeAdmin(BaseAdmin, model=SupplierProductCode):  # type: i
     )
 
 
-class SupplierClothingCodeAdmin(BaseAdmin, model=SupplierClothingCode):  # type: ignore[call-arg]
+class SupplierClothingCodeAdmin(BaseAdmin, model=SupplierClothingCode):  # type: ignore[call-arg, unused-ignore]
     name = "Код поставщика одежды"
     name_plural = "Коды поставщиков одежды"
     category = "Коды"
@@ -141,7 +141,7 @@ class SupplierClothingCodeAdmin(BaseAdmin, model=SupplierClothingCode):  # type:
     )
 
 
-class SupplierPriceAdmin(BaseAdmin, model=SupplierPrice):  # type: ignore[call-arg]
+class SupplierPriceAdmin(BaseAdmin, model=SupplierPrice):  # type: ignore[call-arg, unused-ignore]
     name = "Прайс поставщика"
     name_plural = "Прайсы поставщиков"
     category = "Коды"

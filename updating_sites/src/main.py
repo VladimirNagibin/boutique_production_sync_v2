@@ -1,4 +1,3 @@
-import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -12,18 +11,40 @@ from api.v1.storage import storage
 from api.v1.tiny_admin import router as admin_router
 from api.v1.update_portal import upd_portal
 from api.v1.upload_file import upload_file_router
-from core.logger import LOGGING
+from core.logger import get_logger
 from core.settings import settings
 from middleware.auth_middleware import AuthMiddleware
 from repositories.tinydb_repo import TinyDBRepository, get_tinydb_repo
 
 
+logger = get_logger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     repo: TinyDBRepository = get_tinydb_repo()
-    await repo.ensure_admin_exists()
-    yield
-    ...
+    logger.info(
+        "Application startup initializing",
+        extra={
+            "project_name": settings.PROJECT_NAME,
+            "log_level": settings.APP_LOG_LEVEL,
+        },
+    )
+    try:
+        await repo.ensure_admin_exists()
+    except Exception as error:
+        logger.critical(
+            "Application startup failed",
+            extra={"error": str(error)},
+            exc_info=True,
+        )
+        raise
+
+    logger.info("Application startup completed")
+    try:
+        yield
+    finally:
+        logger.info("Application shutdown completed")
 
 
 app = FastAPI(
@@ -48,7 +69,7 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8000,
-        log_config=LOGGING,
-        log_level=logging.DEBUG,
+        log_config=None,
+        log_level=settings.APP_LOG_LEVEL,
         reload=settings.APP_RELOAD,
     )

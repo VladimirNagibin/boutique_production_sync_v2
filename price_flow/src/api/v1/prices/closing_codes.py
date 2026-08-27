@@ -1,14 +1,19 @@
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
+from core.logger import get_logger
 from schemas.supplier_schemas import ImportResult
 from services.prices.clothing_codes_service import (
     ClothingCodesService,
     get_clothing_codes_service,
 )
 
+
+logger = get_logger(__name__)
+
+CLOTHING_CODES_SERVICE_DEPENDENCY = cast("ClothingCodesService", ...)
 
 closing_codes_router = APIRouter()  # dependencies=[Depends(verify_api_key)])
 
@@ -22,14 +27,29 @@ async def export_clothing_codes(
     # ),
     clothing_codes_service: Annotated[
         ClothingCodesService, Depends(get_clothing_codes_service)
-    ] = ...,
+    ] = CLOTHING_CODES_SERVICE_DEPENDENCY,
 ) -> StreamingResponse:
     """
     Экспортировать данные в файл (ZIP/GZIP/CSV/JSON)
     """
-    return await clothing_codes_service.export_clothing_codes(  # type: ignore[no-any-return]
+    logger.info(
+        "Clothing codes export started",
+        extra={
+            "supplier_id": supplier_id,
+            "packing_format": packing_format,
+        },
+    )
+    response = await clothing_codes_service.export_clothing_codes(
         supplier_id, packing_format
     )
+    logger.info(
+        "Clothing codes export prepared",
+        extra={
+            "supplier_id": supplier_id,
+            "packing_format": packing_format,
+        },
+    )
+    return response
 
 
 @closing_codes_router.post("/import", response_model=ImportResult)
@@ -67,9 +87,29 @@ async def import_clothing_codes(
     - **replace_all**: очистить всю таблицу перед импортом
     - **validate_only**: только проверить данные, не сохранять
     """
-    return await clothing_codes_service.import_clothing_codes(
+    logger.info(
+        "Clothing codes import started",
+        extra={
+            "strategy": strategy,
+            "supplier_id_filter": supplier_id_filter,
+        },
+    )
+    result = await clothing_codes_service.import_clothing_codes(
         file, strategy, supplier_id_filter
     )
+    logger.info(
+        "Clothing codes import completed",
+        extra={
+            "strategy": strategy,
+            "supplier_id_filter": supplier_id_filter,
+            "total_records": result.total_records,
+            "created_count": result.created,
+            "updated": result.updated,
+            "skipped": result.skipped,
+            "errors_count": result.errors_count,
+        },
+    )
+    return result
 
 
 # ----------------------------------------------------------------------

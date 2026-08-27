@@ -5,12 +5,16 @@ from typing import Annotated, Any
 from fastapi import Depends, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
+from core.logger import get_logger
 from repositories.clothing_codes_repo import (
     ClothingCodesRepo,
     get_clothing_code_repo,
 )
 from schemas.supplier_schemas import ClothingCodeCreate, ImportResult
 from services.file_service import FileService, get_file_service
+
+
+logger = get_logger(__name__)
 
 
 class ClothingCodesService:
@@ -27,12 +31,23 @@ class ClothingCodesService:
         supplier_id: int | None = None,
         packing_format: str = "zip",
     ) -> StreamingResponse:
+        logger.info(
+            "Starting clothing code export",
+            extra={
+                "supplier_id": supplier_id,
+                "packing_format": packing_format,
+            },
+        )
         # Получаем данные
         items = await self.clothing_codes_repo.get_all(
             supplier_id=supplier_id, limit=200000
         )
 
         if not items:
+            logger.warning(
+                "Clothing code export has no data",
+                extra={"supplier_id": supplier_id},
+            )
             raise HTTPException(
                 status_code=404, detail="Нет данных для экспорта"
             )
@@ -74,6 +89,15 @@ class ClothingCodesService:
                 "Content-Length": str(buffer.getbuffer().nbytes),
             },
         )
+        logger.info(
+            "Clothing code export completed",
+            extra={
+                "supplier_id": supplier_id,
+                "packing_format": packing_format,
+                "record_count": len(export_data),
+                "size_bytes": buffer.getbuffer().nbytes,
+            },
+        )
         return response
 
     async def import_clothing_codes(
@@ -93,23 +117,46 @@ class ClothingCodesService:
         - **replace_all**: очистить всю таблицу перед импортом
         - **validate_only**: только проверить данные, не сохранять
         """
+        logger.info(
+            "Starting clothing code import",
+            extra={
+                "file_name": file.filename,
+                "strategy": strategy,
+                "supplier_id_filter": supplier_id_filter,
+            },
+        )
         # Читаем файл
         content = await FileService.read_upload_file(file)
 
         if not content:
+            logger.warning(
+                "Clothing code import file is empty",
+                extra={"file_name": file.filename},
+            )
             raise HTTPException(status_code=400, detail="Пустой файл")
 
         # Распаковываем
         try:
             data = FileService.detect_format_and_unpack(
-                content, file.filename
+                content, file.filename or "upload.bin"
             )
         except Exception as e:
+            logger.warning(
+                "Clothing code import unpack failed",
+                extra={
+                    "file_name": file.filename,
+                    "error_type": type(e).__name__,
+                },
+            )
             raise HTTPException(
                 status_code=400, detail=f"Ошибка распаковки: {e!s}"
             ) from e
 
         if not data:
+            logger.warning(
+                "Clothing code import contains no records",
+                extra={"file_name": file.filename},
+            )
             raise HTTPException(
                 status_code=400, detail="Нет данных для импорта"
             )
@@ -136,6 +183,10 @@ class ClothingCodesService:
                 if item.get("supplier_id") == supplier_id_filter
             ]
             if not data:
+                logger.warning(
+                    "Clothing code import filter matched no records",
+                    extra={"supplier_id_filter": supplier_id_filter},
+                )
                 raise HTTPException(
                     status_code=400,
                     detail=f"Нет данных для поставщика {supplier_id_filter}",
@@ -156,6 +207,14 @@ class ClothingCodesService:
 
         # Если только валидация
         if strategy == "validate_only":
+            logger.info(
+                "Clothing code validation completed",
+                extra={
+                    "total_records": len(data),
+                    "validation_error_count": len(validation_errors),
+                    "supplier_id_filter": supplier_id_filter,
+                },
+            )
             return ImportResult(
                 message="Валидация завершена",
                 total_records=len(data),
@@ -167,6 +226,14 @@ class ClothingCodesService:
             )
 
         if validation_errors:
+            logger.warning(
+                "Clothing code import validation failed",
+                extra={
+                    "total_records": len(data),
+                    "validation_error_count": len(validation_errors),
+                    "supplier_id_filter": supplier_id_filter,
+                },
+            )
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -185,7 +252,14 @@ class ClothingCodesService:
                     supplier_id_filter
                 )
             )
-        print(deleted_count)
+        logger.info(
+            "Clothing code replacement completed",
+            extra={
+                "strategy": strategy,
+                "deleted_count": deleted_count,
+                "supplier_id_filter": supplier_id_filter,
+            },
+        )
         # Импортируем
         created = 0
         updated = 0
@@ -200,37 +274,37 @@ class ClothingCodesService:
             ) = await self.clothing_codes_repo.upsert_bulk(validated_items)
 
         elif strategy == "skip":
-            for idx, item in enumerate(validated_items):
+            for idx, validated_item in enumerate(validated_items):
                 try:
                     existing = (
                         await self.clothing_codes_repo.get_by_supplier_code(
-                            item.supplier_id, item.code
+                            validated_item.supplier_id, validated_item.code
                         )
                     )
                     if existing:
                         skipped += 1
                     else:
-                        await self.clothing_codes_repo.create(item)
+                        await self.clothing_codes_repo.create(validated_item)
                         created += 1
                 except Exception as e:  # noqa: BLE001
                     import_errors.append(
                         {
                             "row": idx,
-                            "data": item.model_dump(),
+                            "data": validated_item.model_dump(),
                             "error": str(e),
                         }
                     )
 
         else:  # replace_supplier или replace_all
-            for idx, item in enumerate(validated_items):
+            for idx, validated_item in enumerate(validated_items):
                 try:
-                    await self.clothing_codes_repo.create(item)
+                    await self.clothing_codes_repo.create(validated_item)
                     created += 1
                 except Exception as e:  # noqa: BLE001
                     import_errors.append(
                         {
                             "row": idx,
-                            "data": item.model_dump(),
+                            "data": validated_item.model_dump(),
                             "error": str(e),
                         }
                     )
@@ -248,6 +322,19 @@ class ClothingCodesService:
         #         import_errors
         #     )
 
+        logger.info(
+            "Clothing code import completed",
+            extra={
+                "strategy": strategy,
+                "total_records": len(data),
+                "created_count": created,
+                "updated_count": updated,
+                "skipped_count": skipped,
+                "deleted_count": deleted_count,
+                "error_count": len(import_errors),
+                "supplier_id_filter": supplier_id_filter,
+            },
+        )
         return ImportResult(
             message="Импорт завершен",
             total_records=len(data),

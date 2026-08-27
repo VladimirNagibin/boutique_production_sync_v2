@@ -9,10 +9,13 @@ import requests
 from dropbox import DropboxOAuth2FlowNoRedirect
 from fastapi import Depends
 
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 from services.storage import State, get_storage
 from services.token_cipher import TokenCipher, get_token_cipher
+
+
+logger = get_logger(__name__)
 
 
 class DropboxService:
@@ -50,9 +53,18 @@ class DropboxService:
             raise
             # exit(1)
 
-        self._set_token("access_token", oauth_result.access_token)
-        self._set_token("refresh_token", oauth_result.refresh_token)
-        logger.info("Dropbox tokens saved successfully")
+        access_saved = self._set_token("access_token", oauth_result.access_token)
+        refresh_saved = self._set_token("refresh_token", oauth_result.refresh_token)
+        if access_saved and refresh_saved:
+            logger.info("Dropbox tokens saved successfully")
+        else:
+            logger.error(
+                "Dropbox token storage failed",
+                extra={
+                    "access_token_saved": access_saved,
+                    "refresh_token_saved": refresh_saved,
+                },
+            )
 
     def check_auth_token(self) -> bool:
         """Проверяет валидность текущего access_token."""
@@ -63,6 +75,7 @@ class DropboxService:
         try:
             with dropbox.Dropbox(oauth2_access_token=access_token) as dbx:
                 dbx.users_get_current_account()
+                logger.debug("Dropbox access token is valid")
                 return True
         except dropbox.exceptions.AuthError as e:
             logger.warning(
@@ -179,6 +192,10 @@ class DropboxService:
             Список словарей с информацией о каждой операции (успех/ошибка).
         """
         result: list[dict[str, Any]] = []
+        logger.info(
+            "Dropbox portal synchronization started",
+            extra={"portal_count": len(settings.portals_dropbox)},
+        )
 
         # 1. Проверяем/обновляем токен
         if not self.check_auth_token():
@@ -208,7 +225,10 @@ class DropboxService:
 
         logger.info(
             "Dropbox update completed",
-            extra={"processed": len(result)},
+            extra={
+                "processed": len(result),
+                "error_count": sum(1 for entry in result if entry.get("error")),
+            },
         )
         return result
 
@@ -234,7 +254,13 @@ class DropboxService:
         try:
             encrypted = self.token_cipher.encrypt_sync(value)
             encoded = base64.b64encode(encrypted).decode("utf-8")
-            return self.state.set_state(token_name, encoded)
+            saved = self.state.set_state(token_name, encoded)
+            if not saved:
+                logger.warning(
+                    "Token storage write was rejected",
+                    extra={"token_name": token_name},
+                )
+            return saved
         except Exception as e:
             logger.error(
                 "Failed to encrypt/save token",
@@ -379,7 +405,7 @@ class DropboxService:
         entry: dict[str, Any] = {
             "portal": portal,
             "index": ind,
-            "filename": local_filename,
+            "file_name": local_filename,
             "dropbox_path": dropbox_file_path,
         }
 

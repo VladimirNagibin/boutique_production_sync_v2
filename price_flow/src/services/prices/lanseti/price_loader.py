@@ -30,7 +30,7 @@ from common.exceptions.app_exceptions import (
 )
 from common.exceptions.base import BaseAppException
 from common.exceptions.file import FileAppNotFoundError
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 from models.supplier_models import SupplierProductCode
 from repositories.supplier_product_codes_repo import (
@@ -39,6 +39,9 @@ from repositories.supplier_product_codes_repo import (
 )
 from schemas.converter_schemas import UploadResult
 from services.converter import FileUploader, get_file_uploader
+
+
+logger = get_logger(__name__)
 
 
 class PriceLoader:
@@ -85,8 +88,9 @@ class PriceLoader:
             "NO",
         ),
         (
-            lambda name: "montale" in name.lower()
-            and "декодированный" in name.lower(),
+            lambda name: (
+                "montale" in name.lower() and "декодированный" in name.lower()
+            ),
             "NO",
             "NO",
         ),
@@ -132,28 +136,47 @@ class PriceLoader:
         Returns:
             UploadResult: результат загрузки обработанного файла.
         """
-        logger.info("Starting price processing")
+        logger.info(
+            "Starting supplier price processing",
+            extra={"supplier_id": self.supplier_id},
+        )
         start_time = datetime.now(UTC)
         enriched_file_path: Path | None = None
         details: dict[str, Any] = {}
         try:
             # 1. Получение ссылки из почты
-            logger.info("Fetching drive link from email...")
+            logger.info(
+                "Fetching supplier price location",
+                extra={"supplier_id": self.supplier_id},
+            )
             drive_link = await self._get_latest_drive_link()
             self._validate_drive_link(drive_link)
             logger.info(
-                f"Find link on Google Drive: {drive_link[:50]}..."  # type: ignore[index]
+                "Supplier price location found",
+                extra={"supplier_id": self.supplier_id},
             )
             details["drive_link"] = drive_link
 
             # 2. Поиск файла в Google Drive
-            logger.info(f"Searching for file '{self.target_filename[0]}'...")
+            logger.info(
+                "Searching for supplier price file",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "target_count": len(self.target_filename),
+                },
+            )
             file_id, filename = await self._find_file_in_drive(
                 drive_link,  # type: ignore[arg-type]
                 self.target_filename,
             )
             self._validate_file_id(file_id, self.target_filename)  # type: ignore[arg-type]
-            logger.info(f"Find file with ID: {file_id}")
+            logger.info(
+                "Supplier price file found",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "file_name": filename,
+                },
+            )
             details["file_id"] = file_id
             details["filename"] = filename
 
@@ -167,16 +190,28 @@ class PriceLoader:
             )
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            logger.info(f"Downloading file to {output_path}")
+            logger.info(
+                "Downloading supplier price file",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "file_name": output_path.name,
+                },
+            )
             await self._download_file(file_id, output_path)  # type: ignore[arg-type]
             details["output_path"] = output_path
 
             # 4. Получение данных поставщика
-            logger.info(f"Loading supplier data (ID={self.supplier_id})...")
+            logger.info(
+                "Loading supplier reference data",
+                extra={"supplier_id": self.supplier_id},
+            )
             supplier_df = await self._get_supplier_data_async()
 
             # 5. Обработка Excel файла
-            logger.info("Processing Excel file...")
+            logger.info(
+                "Processing supplier price workbook",
+                extra={"supplier_id": self.supplier_id},
+            )
             (
                 enriched_file_path,
                 details_process_excel_file,
@@ -185,7 +220,13 @@ class PriceLoader:
             details.update(details_process_excel_file)
 
             # 6. Конвертация
-            logger.info("Uploading enriched file...")
+            logger.info(
+                "Uploading processed price to converter",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "file_name": enriched_file_path.name,
+                },
+            )
             upload_result = self.file_uploader.upload_file(enriched_file_path)
 
             # 7. Статистика
@@ -196,13 +237,28 @@ class PriceLoader:
                 extra={
                     "time_seconds": elapsed,
                     "result_path": str(enriched_file_path),
+                    "supplier_id": self.supplier_id,
+                    "converter_success": upload_result.success,
                 },
             )
 
-        except BaseAppException:
+        except BaseAppException as e:
+            logger.warning(
+                "Supplier price processing failed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "error_type": type(e).__name__,
+                },
+            )
             raise
         except Exception as e:
-            logger.error("Unexpected error", extra={"error": str(e)})
+            logger.exception(
+                "Unexpected supplier price processing error",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "error_type": type(e).__name__,
+                },
+            )
             # Оборачиваем неизвестные исключения
             raise PriceProcessingError(
                 error_code="PRICE_PROCESSING_ERROR",
@@ -229,10 +285,7 @@ class PriceLoader:
             if link:
                 # Очистка ссылки от трекеров
                 clean_link = self._clean_tracker_url(link)
-                logger.debug(
-                    "Cleaned drive link",
-                    extra={"link": clean_link[:100] + "..."},
-                )
+                logger.debug("Supplier price location normalized")
                 return clean_link
 
         except imaplib.IMAP4.error as e:
@@ -265,7 +318,7 @@ class PriceLoader:
             # Получаем общее количество сообщений
             _, messages_data = mail.search(None, "ALL")
             if not messages_data[0]:
-                logger.warning("В почтовом ящике нет сообщений")
+                logger.warning("Mailbox contains no messages")
                 return None
 
             message_ids = messages_data[0].split()
@@ -304,7 +357,10 @@ class PriceLoader:
             logger.warning("No drive link found in scanned messages")
 
         except Exception as e:
-            logger.error("Email fetch error", extra={"error": str(e)})
+            logger.exception(
+                "Supplier price email fetch failed",
+                extra={"error_type": type(e).__name__},
+            )
             raise
         else:
             return None
@@ -334,7 +390,10 @@ class PriceLoader:
             ]
 
             if links:
-                logger.debug(f"Find {len(links)} links with tracker")
+                logger.debug(
+                    "Tracked links found in email",
+                    extra={"link_count": len(links)},
+                )
                 return links[0]  # type: ignore
 
             # Дополнительный поиск ссылок на Google Drive
@@ -345,7 +404,10 @@ class PriceLoader:
             ]
 
             if drive_links:
-                logger.debug(f"Find {len(drive_links)} links on Google Drive")
+                logger.debug(
+                    "Drive links found in email",
+                    extra={"link_count": len(drive_links)},
+                )
                 return drive_links[0]  # type: ignore
 
         except (AttributeError, KeyError, TypeError, ValueError) as e:
@@ -452,22 +514,20 @@ class PriceLoader:
 
                     encoded_url = match.group(1)
                     try:
-                        decoded = base64.b64decode(encoded_url).decode(
-                            "utf-8"
-                        )
-                        logger.debug(
-                            "The URL from the tracker has been decoded: "
-                            f"{url}"
-                        )
+                        decoded = base64.b64decode(encoded_url).decode("utf-8")
+                        logger.debug("Tracked URL decoded")
                     except (binascii.Error, UnicodeDecodeError) as e:
                         logger.debug(
-                            f"Error decoding URL from tracker: {e}, "
-                            f"URL: {url}"
+                            "Tracked URL decode failed",
+                            extra={"error_type": type(e).__name__},
                         )
                     else:
                         return decoded
         except (AttributeError, ValueError, KeyError, IndexError) as e:
-            logger.warning(f"Couldn't clear URL from tracker: {e}")
+            logger.warning(
+                "Tracked URL normalization failed",
+                extra={"error_type": type(e).__name__},
+            )
         return url
 
     # ----- Google Drive -----
@@ -530,7 +590,10 @@ class PriceLoader:
                 logger.error("Cannot extract folder ID from link")
                 return None
 
-            logger.debug(f"Find file '{filename}' in folder ID: {folder_id}")
+            logger.debug(
+                "Searching Drive folder",
+                extra={"target_file_name": filename},
+            )
 
             # Создаем сервис Google Drive
             service = build(
@@ -555,7 +618,10 @@ class PriceLoader:
             )
 
             files = results.get("files", [])
-            logger.debug(f"Found {len(files)} files in folder")
+            logger.debug(
+                "Drive folder files loaded",
+                extra={"file_count": len(files)},
+            )
 
             # Ищем файл по имени (частичное совпадение)
             filename_lower = filename.lower()
@@ -563,17 +629,22 @@ class PriceLoader:
                 if filename_lower in file["name"].lower():
                     logger.info(
                         "File found",
-                        extra={"file_name": file["name"], "id": file["id"]},
+                        extra={"file_name": file["name"]},
                     )
                     return file["id"]  # type: ignore[no-any-return]
 
             # Если точное совпадение не найдено, логируем список файлов
-            logger.warning(f"File '{filename}' not found. Awailable files:")
-            for file in files:
-                logger.warning(f"  - {file['name']}")
+            logger.warning(
+                "Supplier price file not found in Drive folder",
+                extra={
+                    "target_file_name": filename,
+                    "available_file_count": len(files),
+                },
+            )
         except Exception as e:
-            logger.error(
-                f"Error when searching for a file in Google Drive: {e}"
+            logger.exception(
+                "Drive file search failed",
+                extra={"error_type": type(e).__name__},
             )
             raise
         else:
@@ -647,8 +718,22 @@ class PriceLoader:
             await asyncio.to_thread(
                 self._download_file_sync, file_id, output_path
             )
-            logger.info("File downloaded", extra={"path": str(output_path)})
+            logger.info(
+                "Supplier price file downloaded",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "file_name": output_path.name,
+                },
+            )
         except Exception as e:
+            logger.exception(
+                "Supplier price download failed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "file_name": output_path.name,
+                    "error_type": type(e).__name__,
+                },
+            )
             raise DriveApiError(
                 error_code="DOWNLOAD_ERROR",
                 message="Failed to download file",
@@ -692,7 +777,11 @@ class PriceLoader:
             if output_path.exists() and output_path.stat().st_size > 0:
                 file_size_mb = output_path.stat().st_size / (1024 * 1024)
                 logger.info(
-                    f"Файл скачан успешно. Размер: {file_size_mb:.2f} MB"
+                    "Supplier price download written",
+                    extra={
+                        "file_name": output_path.name,
+                        "size_mb": round(file_size_mb, 2),
+                    },
                 )
             else:
                 raise DriveApiError(
@@ -700,7 +789,13 @@ class PriceLoader:
                     message="The downloaded file is empty or does not exist",
                 )
         except requests.exceptions.RequestException as e:
-            logger.error(f"Network error when downloading a file: {e}")
+            logger.exception(
+                "Supplier price network download failed",
+                extra={
+                    "file_name": output_path.name,
+                    "error_type": type(e).__name__,
+                },
+            )
             raise
 
     # ----- Получение данных поставщика -----
@@ -720,7 +815,10 @@ class PriceLoader:
 
             logger.info(
                 "Supplier data loaded",
-                extra={"count": len(supplier_data)},
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "record_count": len(supplier_data),
+                },
             )
 
         except SupplierDataError:
@@ -779,8 +877,11 @@ class PriceLoader:
             )
             details["len_excel"] = len(excel_df)
             logger.info(
-                f"Loaded {len(excel_df)} строк. "
-                f"Header in row: {header_row + 1}"
+                "Supplier price workbook loaded",
+                extra={
+                    "row_count": len(excel_df),
+                    "header_row": header_row + 1,
+                },
             )
 
             # 2. Объединение данных
@@ -820,9 +921,12 @@ class PriceLoader:
             self._log_processing_statistics(processed_df)
 
         except Exception as e:
-            logger.error(
+            logger.exception(
                 "Excel processing failed",
-                extra={"error": str(e)},
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "error_type": type(e).__name__,
+                },
             )
             raise ExcelProcessingError(
                 error_code="EXCEL_PROCESSING_ERROR",
@@ -852,7 +956,10 @@ class PriceLoader:
             for i in range(len(preview_df)):
                 if "Код" in preview_df.iloc[i].astype(str).values:
                     header_row = i
-                    logger.debug(f"The title was found in the line {i}")
+                    logger.debug(
+                        "Workbook header found",
+                        extra={"header_row": i},
+                    )
                     break
 
             self._validate_header_row(header_row)
@@ -879,7 +986,13 @@ class PriceLoader:
             raise
 
         except Exception as e:
-            logger.error(f"Ошибка при чтении Excel: {e}")
+            logger.exception(
+                "Supplier price workbook read failed",
+                extra={
+                    "file_name": file_path.name,
+                    "error_type": type(e).__name__,
+                },
+            )
             raise ExcelProcessingError(
                 message="Ошибка при чтении Excel файла", details=str(e)
             ) from e
@@ -1295,10 +1408,22 @@ class PriceLoader:
 
             # Сохраняем
             wb.save(output_file)
-            logger.info(f"Файл успешно сохранен: {output_file}")
+            logger.info(
+                "Processed supplier price workbook saved",
+                extra={
+                    "file_name": output_file.name,
+                    "row_count": len(df),
+                },
+            )
 
         except Exception as e:
-            logger.error(f"Ошибка при сохранении Excel файла: {e}")
+            logger.exception(
+                "Processed supplier price workbook save failed",
+                extra={
+                    "file_name": output_file.name,
+                    "error_type": type(e).__name__,
+                },
+            )
             raise
 
     # def _write_to_excel_with_formatting(
@@ -1347,8 +1472,6 @@ class PriceLoader:
 
     #     # Сохраняем в новый файл
     #     wb.save(new_file)
-    #     print(f"Файл сохранен: {new_file}")
-
     # ----- Статистика -----
 
     def _log_processing_statistics(self, df: pd.DataFrame) -> None:
@@ -1382,7 +1505,10 @@ class PriceLoader:
             )
 
         except (KeyError, AttributeError, TypeError, ZeroDivisionError) as e:
-            logger.warning(f"Couldn't collect statistics: {e}")
+            logger.warning(
+                "Could not collect processing statistics",
+                extra={"error_type": type(e).__name__},
+            )
 
     # ----- Очистка -----
 
@@ -1403,12 +1529,16 @@ class PriceLoader:
                     )
                 except FileNotFoundError:
                     logger.debug(
-                        f"The file has already been deleted: {file_path}"
+                        "Temporary file already removed",
+                        extra={"file_name": file_path.name},
                     )
                 except PermissionError as e:
                     logger.warning(
-                        "Don't have the rights to delete the file. "
-                        f"{file_path}: {e}"
+                        "Temporary file permission denied",
+                        extra={
+                            "file_name": file_path.name,
+                            "error_type": type(e).__name__,
+                        },
                     )
                 except OSError as e:
                     # Ловим все OS-специфичные ошибки
@@ -1419,8 +1549,11 @@ class PriceLoader:
                 except RuntimeError as e:
                     # Ошибки, связанные с asyncio.to_thread
                     logger.warning(
-                        "Execution error when deleting a file "
-                        f"{file_path}: {e}"
+                        "Temporary file cleanup execution failed",
+                        extra={
+                            "file_name": file_path.name,
+                            "error_type": type(e).__name__,
+                        },
                     )
 
 

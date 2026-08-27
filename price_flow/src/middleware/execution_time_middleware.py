@@ -9,7 +9,10 @@ from typing import TYPE_CHECKING, cast
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
-from common.logger import logger
+from core.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 if TYPE_CHECKING:
@@ -18,6 +21,9 @@ if TYPE_CHECKING:
 
 
 # ===== Middleware для измерения времени выполнения запроса =====
+SLOW_REQUEST_THRESHOLD_MS = 1000.0
+
+
 class ExecutionTimeMiddleware(BaseHTTPMiddleware):
     """
     Middleware для измерения времени выполнения запроса и добавления метрик
@@ -42,13 +48,29 @@ class ExecutionTimeMiddleware(BaseHTTPMiddleware):
         """Обрабатывает входящий запрос и исходящий ответ."""
         start_time = time.perf_counter()
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        request.state.request_id = request_id
+        request.state.request_started_at = start_time
 
         # Передаем управление следующему middleware или эндпоинту
         response = await call_next(request)
 
         execution_time = round((time.perf_counter() - start_time) * 1000.0, 4)
+        request.state.execution_time_ms = execution_time
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Execution-Time-Ms"] = str(execution_time)
+
+        if execution_time >= SLOW_REQUEST_THRESHOLD_MS:
+            logger.warning(
+                "Slow request completed",
+                extra={
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": response.status_code,
+                    "execution_time_ms": execution_time,
+                    "threshold_ms": SLOW_REQUEST_THRESHOLD_MS,
+                },
+            )
 
         # Модифицируем только JSON-ответы
         content_type = response.headers.get("content-type", "")
@@ -56,7 +78,12 @@ class ExecutionTimeMiddleware(BaseHTTPMiddleware):
             body_iterator = getattr(response, "body_iterator", None)
             if body_iterator is None:
                 logger.warning(
-                    "Response missing body_iterator, cannot modify JSON"
+                    "Response missing body iterator",
+                    extra={
+                        "request_id": request_id,
+                        "method": request.method,
+                        "path": request.url.path,
+                    },
                 )
                 return response
 
@@ -66,9 +93,14 @@ class ExecutionTimeMiddleware(BaseHTTPMiddleware):
                     # chunk должен быть bytes, используем cast для указания
                     # типа
                     body += cast("bytes", chunk)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.error(
-                    "Error reading response body: %s", e, exc_info=True
+                    "Failed to read response body",
+                    extra={
+                        "request_id": request_id,
+                        "error_type": type(e).__name__,
+                    },
+                    exc_info=True,
                 )
                 return response
 
@@ -91,23 +123,39 @@ class ExecutionTimeMiddleware(BaseHTTPMiddleware):
                         media_type=response.media_type,
                     )
             except json.JSONDecodeError as e:
-                logger.error(
-                    "Failed to parse JSON response for modification: %s", e
+                logger.warning(
+                    "Failed to parse JSON response",
+                    extra={
+                        "request_id": request_id,
+                        "error_type": type(e).__name__,
+                    },
                 )
             except UnicodeDecodeError as e:
-                logger.error("Failed to decode response body to UTF-8: %s", e)
+                logger.warning(
+                    "Failed to decode response body",
+                    extra={
+                        "request_id": request_id,
+                        "error_type": type(e).__name__,
+                    },
+                )
             except (ValueError, TypeError) as e:
                 # Неожиданный формат данных (например, data не dict)
                 logger.error(
-                    "Unexpected data format in JSON response: %s",
-                    e,
+                    "Unexpected JSON response data format",
+                    extra={
+                        "request_id": request_id,
+                        "error_type": type(e).__name__,
+                    },
                     exc_info=True,
                 )
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 # Логируем любые неожиданные ошибки при модификации
                 logger.error(
-                    "Unexpected error in ExecutionTimeMiddleware: %s",
-                    e,
+                    "Unexpected response instrumentation error",
+                    extra={
+                        "request_id": request_id,
+                        "error_type": type(e).__name__,
+                    },
                     exc_info=True,
                 )
 

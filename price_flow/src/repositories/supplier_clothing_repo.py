@@ -1,3 +1,4 @@
+import asyncio
 import sqlite3
 
 from pathlib import Path
@@ -9,11 +10,14 @@ from pandas import DataFrame
 
 from common.exceptions.database import DatabaseLoadError
 from common.exceptions.file import FileAppNotFoundError
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 from db.factory import AsyncDatabaseFactory
 from interfaces.db.base import IDatabaseManager
 from schemas.supplier_schemas import SupplierProduct, SupplierProductPrice
+
+
+logger = get_logger(__name__)
 
 
 class SupplierClothingRepo:
@@ -67,6 +71,7 @@ class SupplierClothingRepo:
         source_conn = sqlite3.connect(source_db)
         target_conn = sqlite3.connect(target_db)
 
+        transferred_rows = 0
         for source_table, config in table_mapping.items():
             target_table = config.get("target_table", source_table)
             column_mapping = config["column_mapping"]
@@ -88,9 +93,17 @@ class SupplierClothingRepo:
             df.to_sql(
                 target_table, target_conn, if_exists="replace", index=False
             )
+            transferred_rows += len(df)
 
         source_conn.close()
         target_conn.close()
+        logger.info(
+            "Supplier clothing data transfer completed",
+            extra={
+                "table_count": len(table_mapping),
+                "row_count": transferred_rows,
+            },
+        )
 
     async def get_max_code_async(self, supplier_id: int) -> int:
         """
@@ -115,18 +128,28 @@ class SupplierClothingRepo:
                     if result[0]["MAX(code)"] is not None
                     else 0
                 )
-                print(
-                    f"Максимальный код для поставщика {supplier_id}: "
-                    f"{max_code}"
+                logger.debug(
+                    "Supplier maximum clothing code retrieved",
+                    extra={"supplier_id": supplier_id, "max_code": max_code},
                 )
 
                 return max_code
             else:
-                print(f"Для поставщика {supplier_id} нет записей")
+                logger.debug(
+                    "No clothing codes found for supplier",
+                    extra={"supplier_id": supplier_id},
+                )
                 return 0
 
-        except Exception as e:  # noqa: BLE001
-            print(f"Ошибка: {e}")
+        except Exception as e:
+            logger.error(
+                "Failed to retrieve supplier maximum clothing code",
+                extra={
+                    "supplier_id": supplier_id,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
             return 0
 
     async def clear_supplier_price(self, supplier_id: int) -> None:
@@ -141,11 +164,21 @@ class SupplierClothingRepo:
             WHERE supplier_id = ?
             """
 
-            result = await db_manager.execute_query(query, (supplier_id,))
-            print(result)
+            await db_manager.execute_query(query, (supplier_id,))
+            logger.info(
+                "Supplier price records deleted",
+                extra={"supplier_id": supplier_id},
+            )
 
-        except Exception as e:  # noqa: BLE001
-            print(f"Ошибка: {e}")
+        except Exception as e:
+            logger.error(
+                "Failed to delete supplier price records",
+                extra={
+                    "supplier_id": supplier_id,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
 
     async def get_supplier_product(
         self,
@@ -178,8 +211,15 @@ class SupplierClothingRepo:
                 # print("")
                 return None
 
-        except Exception as e:  # noqa: BLE001
-            print(f"Ошибка: {e}")
+        except Exception as e:
+            logger.error(
+                "Failed to retrieve supplier product",
+                extra={
+                    "supplier_id": supplier_id,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
         return None
 
     async def get_supplier_category_by_code(
@@ -210,8 +250,15 @@ class SupplierClothingRepo:
                 # print("")
                 return None
 
-        except Exception as e:  # noqa: BLE001
-            print(f"Ошибка: {e}")
+        except Exception as e:
+            logger.error(
+                "Failed to retrieve supplier category",
+                extra={
+                    "supplier_id": supplier_id,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
         return None
 
     async def add_supplier_price(
@@ -233,15 +280,21 @@ class SupplierClothingRepo:
             Словарь с результатами операции
         """
         if not supplier_prices:
-            print("Пустой список прайсов")
+            logger.info(
+                "Supplier price bulk upsert skipped", extra={"row_count": 0}
+            )
             return {"inserted": 0, "skipped": 0, "errors": 0}
 
         try:
             db_manager = await self._get_db_manager()
 
-            print(
-                f"Начало загрузки {len(supplier_prices)} записей в "
-                "supplier_price"
+            logger.info(
+                "Starting supplier price bulk upsert",
+                extra={
+                    "row_count": len(supplier_prices),
+                    "batch_size": batch_size,
+                    "replace_duplicates": replace_duplicates,
+                },
             )
 
             # Статистика
@@ -272,28 +325,43 @@ class SupplierClothingRepo:
                             db_manager, batch, stats
                         )
 
-                    print(
-                        f"Пакет {stats['batches']}: обработано {len(batch)} "
-                        "записей"
+                except Exception as e:
+                    logger.error(
+                        "Supplier price batch upsert failed",
+                        extra={
+                            "batch_number": stats["batches"],
+                            "row_count": len(batch),
+                            "error_type": type(e).__name__,
+                        },
+                        exc_info=True,
                     )
-
-                except Exception as e:  # noqa: BLE001
-                    print(f"Ошибка в пакете {stats['batches']}: {e}")
                     stats["errors"] += len(batch)
 
             # Собираем статистику по поставщикам
             stats["supplier_ids"] = list(stats["supplier_ids"])
 
-            print("Загрузка завершена:")
-            print(f"   Всего: {stats['total']}")
-            print(f"   Вставлено: {stats['inserted']}")
-            print(f"   Обновлено: {stats['updated']}")
-            print(f"   Пропущено: {stats['skipped']}")
-            print(f"   Ошибок: {stats['errors']}")
-            print(f"   Поставщики: {stats['supplier_ids']}")
+            logger.info(
+                "Supplier price bulk upsert completed",
+                extra={
+                    "total_count": stats["total"],
+                    "inserted_count": stats["inserted"],
+                    "updated_count": stats["updated"],
+                    "skipped_count": stats["skipped"],
+                    "error_count": stats["errors"],
+                    "supplier_count": len(stats["supplier_ids"]),
+                    "batch_count": stats["batches"],
+                },
+            )
 
-        except Exception as e:  # noqa: BLE001
-            print(f"Критическая ошибка загрузки: {e}")
+        except Exception as e:
+            logger.error(
+                "Supplier price bulk upsert failed",
+                extra={
+                    "row_count": len(supplier_prices),
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
             return {
                 "status": "error",
                 "error": str(e),
@@ -367,10 +435,14 @@ class SupplierClothingRepo:
 
         except sqlite3.IntegrityError as e:
             # Если ошибка целостности, пробуем вставить по одной
-            print(f"Ошибка целостности пакета, вставляем по одной: {e}")
-            await self._insert_one_by_one(
-                db_manager, batch, stats, insert_sql
+            logger.warning(
+                "Supplier price batch integrity error; using row fallback",
+                extra={
+                    "row_count": len(batch),
+                    "error_type": type(e).__name__,
+                },
             )
+            await self._insert_one_by_one(db_manager, batch, stats, insert_sql)
 
     async def _insert_batch_ignore(
         self,
@@ -411,22 +483,21 @@ class SupplierClothingRepo:
 
             stats["supplier_ids"].add(item.supplier_id)
 
-        # Выполняем вставку
+        # Выполняем пакетную вставку (INSERT OR IGNORE)
         try:
-            result = await db_manager.execute_query(insert_sql, values)
-
-            # Считаем вставленные записи
-            inserted_count = (
-                result.rowcount if hasattr(result, "rowcount") else len(batch)
-            )
-            stats["inserted"] += inserted_count
-            stats["skipped"] += len(batch) - inserted_count
+            await db_manager.execute_many(insert_sql, values)
+            # Без rowcount от executemany считаем весь пакет как inserted
+            stats["inserted"] += len(batch)
 
         except sqlite3.IntegrityError as e:
-            print(f"Ошибка целостности, вставляем по одной: {e}")
-            await self._insert_one_by_one(
-                db_manager, batch, stats, insert_sql
+            logger.warning(
+                "Supplier price batch integrity error; using row fallback",
+                extra={
+                    "row_count": len(batch),
+                    "error_type": type(e).__name__,
+                },
             )
+            await self._insert_one_by_one(db_manager, batch, stats, insert_sql)
 
     async def _insert_one_by_one(
         self,
@@ -470,11 +541,18 @@ class SupplierClothingRepo:
                     stats["inserted"] += 1
 
             except sqlite3.IntegrityError as e:
-                print(f"Ошибка вставки записи: {e}")
+                logger.warning(
+                    "Supplier price row integrity error",
+                    extra={"error_type": type(e).__name__},
+                )
                 stats["errors"] += 1
 
-            except Exception as e:  # noqa: BLE001
-                print(f"Неожиданная ошибка: {e}")
+            except Exception as e:
+                logger.error(
+                    "Unexpected supplier price row upsert error",
+                    extra={"error_type": type(e).__name__},
+                    exc_info=True,
+                )
                 stats["errors"] += 1
 
     def save_price_as_is(
@@ -520,7 +598,7 @@ class SupplierClothingRepo:
         # self._validate_table_name(table_name)
 
         logger.info(
-            "Начало загрузки данных из XLSX",
+            "Starting supplier price XLSX load",
             extra={
                 "file_path": str(xlsx_path),
                 "table_name": table_name,
@@ -529,14 +607,20 @@ class SupplierClothingRepo:
         )
 
         # Проверка существования файла
-        if not xlsx_path.exists():
-            error_msg = f"XLSX файл не найден: {xlsx_path}"
-            logger.error(error_msg)
+        if not await asyncio.to_thread(xlsx_path.exists):
+            error_msg = f"XLSX file not found: {xlsx_path}"
+            logger.error(
+                "Supplier price XLSX file not found",
+                extra={"file_path": str(xlsx_path), "table_name": table_name},
+            )
             raise FileAppNotFoundError(xlsx_path, error_msg)
 
-        if not xlsx_path.is_file():
-            error_msg = f"Путь не является файлом: {xlsx_path}"
-            logger.error(error_msg)
+        if not await asyncio.to_thread(xlsx_path.is_file):
+            error_msg = f"Path is not a file: {xlsx_path}"
+            logger.error(
+                "Supplier price XLSX path is not a file",
+                extra={"file_path": str(xlsx_path), "table_name": table_name},
+            )
             raise ValueError(error_msg)
 
         # Запускаем тяжелую операцию в отдельном потоке
@@ -547,7 +631,7 @@ class SupplierClothingRepo:
             # )
             await self._sync_load_operation(xlsx_path, table_name)
             logger.info(
-                "Данные успешно загружены",
+                "Supplier price XLSX load completed",
                 extra={
                     "file_path": str(xlsx_path),
                     "table_name": table_name,
@@ -561,17 +645,32 @@ class SupplierClothingRepo:
 
         except (ValueError, FileAppNotFoundError) as e:
             # Ошибки валидации данных и парсинга
-            logger.warning(f"Ошибка обработки данных: {e}")
+            logger.warning(
+                "Supplier price XLSX validation failed",
+                extra={"error_type": type(e).__name__},
+            )
             raise
 
         except DatabaseLoadError as e:
             # Ошибки базы данных
-            logger.error(f"Ошибка базы данных: {e}")
+            logger.error(
+                "Supplier price XLSX database load failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             raise
 
         except Exception as e:
-            error_msg = f"Неожиданная ошибка при загрузке {xlsx_path}: {e}"
-            logger.error(error_msg, exc_info=True)
+            error_msg = f"Unexpected error loading {xlsx_path}: {e}"
+            logger.error(
+                "Unexpected supplier price XLSX load error",
+                extra={
+                    "file_path": str(xlsx_path),
+                    "table_name": table_name,
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
             raise RuntimeError(error_msg) from e
 
     async def _sync_load_operation(
@@ -673,9 +772,10 @@ class SupplierClothingRepo:
                 },
             )
 
-            logger.info(f"Загружен Excel файл: {excel_path}")
-            logger.info(f"Количество строк: {len(df)}")
-            logger.info(f"Колонки: {', '.join(df.columns)}")
+            logger.info(
+                "Supplier price XLSX read",
+                extra={"row_count": len(df), "column_count": len(df.columns)},
+            )
 
             # Проверяем необходимые колонки
             required_columns = [
@@ -716,10 +816,17 @@ class SupplierClothingRepo:
             ).astype("Int64")
 
         except FileNotFoundError:
-            logger.error(f"Файл не найден: {excel_path}")
+            logger.exception(
+                "Supplier price XLSX file not found",
+                extra={"file_path": str(excel_path)},
+            )
             raise
         except Exception as e:
-            logger.error(f"Ошибка загрузки Excel файла: {e}")
+            logger.error(
+                "Supplier price XLSX read failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             raise
         else:
             return df
@@ -773,12 +880,22 @@ class SupplierClothingRepo:
                 data_to_update.append(row_tuple)
             # print(data_to_update)
             # 5. Выполнение обновления
-            result = await db_manager.execute_many(query, data_to_update)
-            print(result)
+            await db_manager.execute_many(query, data_to_update)
+            logger.info(
+                "Supplier price categories bulk update completed",
+                extra={"row_count": len(data_to_update)},
+            )
             await self.update_supplier_clothing()
 
-        except Exception as e:  # noqa: BLE001
-            print(f"Ошибка: {e}")
+        except Exception as e:
+            logger.error(
+                "Supplier price categories bulk update failed",
+                extra={
+                    "row_count": len(df),
+                    "error_type": type(e).__name__,
+                },
+                exc_info=True,
+            )
 
         #     updated_count = 0
         #     total_processed = 0
@@ -931,11 +1048,15 @@ class SupplierClothingRepo:
                 product_summary, size, color
             FROM supplier_price
             """
-            result = await db_manager.execute_query_(query)
-            print(result)
+            await db_manager.execute_query(query)
+            logger.info("Supplier clothing codes insert completed")
 
-        except Exception as e:  # noqa: BLE001
-            print(f"Ошибка: {e}")
+        except Exception as e:
+            logger.error(
+                "Supplier clothing codes insert failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
 
     async def update_supplier_clothing_(self) -> dict[str, Any]:
         try:
@@ -943,10 +1064,21 @@ class SupplierClothingRepo:
 
             # Разделяем запрос на отдельные операции
             for query in self._get_queries_update_supplier_clothing():
-                result = await db_manager.execute_query(query)
-                print(f"{result}===================")
-        except Exception as e:  # noqa: BLE001
-            print(f"Ошибка: {e}")
+                await db_manager.execute_query(query)
+            logger.info(
+                "Supplier clothing codes upsert completed",
+                extra={
+                    "operation_count": len(
+                        self._get_queries_update_supplier_clothing()
+                    )
+                },
+            )
+        except Exception as e:
+            logger.error(
+                "Supplier clothing codes upsert failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             return {"success": False, "error": str(e)}
         else:
             return {"success": True, "message": "Обновление завершено"}
@@ -1007,7 +1139,10 @@ class SupplierClothingRepo:
             tables = await db_manager.execute_query(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
-            print("Доступные таблицы:", [t["name"] for t in tables])
+            logger.debug(
+                "SQLite tables inspected before migration",
+                extra={"table_count": len(tables)},
+            )
 
             # 2. Выполняем миграцию в одной транзакции
             # await db_manager.execute_query("BEGIN TRANSACTION")
@@ -1072,15 +1207,19 @@ class SupplierClothingRepo:
             # Коммитим
             #    await db_manager.execute_query("COMMIT")
 
-            print("Миграция успешно завершена")
+            logger.info("Supplier clothing schema migration completed")
 
             # except Exception as inner_error:
             #     # Откатываем при любой ошибке внутри транзакции
             #     # await db_manager.execute_query("ROLLBACK")
             #     raise inner_error
 
-        except Exception as e:  # noqa: BLE001
-            print(f"Ошибка миграции: {e}")
+        except Exception as e:
+            logger.error(
+                "Supplier clothing schema migration failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
             return {"success": False, "error": str(e)}
         else:
             return {"success": True}

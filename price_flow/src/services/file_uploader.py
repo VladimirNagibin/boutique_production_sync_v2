@@ -17,9 +17,12 @@ from common.exceptions.file import (
     FileTooLargeError,
     ZipExtractionError,
 )
-from common.logger import logger
+from core.logger import get_logger
 from core.settings import settings
 from schemas.response_schemas import SuccessResponse
+
+
+logger = get_logger(__name__)
 
 
 # ===== Константы =====
@@ -231,7 +234,7 @@ class FileUploader:
             raise
         except OSError as e:
             # Ошибки диска (нет места, права доступа)
-            logger.error(
+            logger.exception(
                 "Disk write error",
                 extra={"path": str(file_path), "error": str(e)},
             )
@@ -374,7 +377,7 @@ class FileUploader:
                 extra={"path": str(file_path)},
             )
         except OSError as e:
-            logger.error(
+            logger.exception(
                 "Failed to remove temporary file",
                 extra={"path": str(file_path), "error": str(e)},
             )
