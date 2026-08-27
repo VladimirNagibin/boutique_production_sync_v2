@@ -11,8 +11,8 @@ services:
 
   converter:
     volumes:
-      - ./converter/src:/opt/app
-      - ./common:/opt/app/common
+      - ./converter/src:/app/src
+      - ./common:/app/src/common
     env_file:
       - ./.env.converter
     ports:

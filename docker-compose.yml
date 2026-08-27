@@ -70,6 +70,7 @@ services:
     build:
       context: .
       dockerfile: converter/Dockerfile
+      target: development
     depends_on:
       redis:
         condition: service_healthy

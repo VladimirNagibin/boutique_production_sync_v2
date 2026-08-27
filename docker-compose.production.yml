@@ -42,8 +42,8 @@ services:
     env_file:
       - ./.env.converter
     volumes:
-      - converter-logs-data:/opt/app/logs
-      - converter-data:/opt/app/data
+      - converter-logs-data:/app/src/logs
+      - converter-data:/app/src/data
     # ports:
     #  - 8090:8000
     depends_on:
