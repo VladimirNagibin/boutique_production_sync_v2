@@ -6,16 +6,25 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
-from passlib.context import CryptContext  # type: ignore[import-untyped]
-from tinydb import Query, TinyDB  # type: ignore[import-not-found]
+from passlib.context import CryptContext
+from tinydb import Query, TinyDB
 
 from core.logger import get_logger
 from core.settings import settings
 
+
 logger = get_logger(__name__)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _tiny_db_file_path() -> str:
+    """Абсолютный путь к файлу TinyDB под base_dir/data/storage."""
+    return str(
+        Path(settings.base_dir) / "data" / "storage" / settings.tiny_db_path
+    )
 
 
 class TinyDBRepository:
@@ -32,8 +41,11 @@ class TinyDBRepository:
         """Получает или инициализирует экземпляр TinyDB."""
         if self._db is None:
             try:
-                # Инициализация в отдельном потоке, чтобы не блокировать event loop
-                self._db = await asyncio.to_thread(TinyDB, self.db_path)
+                # Инициализация в отдельном потоке, чтобы не блокировать
+                # event loop
+                self._db = await asyncio.to_thread(
+                    TinyDB, self.db_path, create_dirs=True
+                )
             except Exception as error:
                 logger.error(
                     "TinyDB initialization failed",
@@ -58,7 +70,9 @@ class TinyDBRepository:
             int: ID новой записи (doc_id)
         """
         db = await self._get_db()
-        doc_id = await asyncio.to_thread(db.insert, {"key": key, "value": value})
+        doc_id = await asyncio.to_thread(
+            db.insert, {"key": key, "value": value}
+        )
         logger.info(
             "TinyDB record inserted",
             extra={"key": key, "doc_id": doc_id},
@@ -149,7 +163,9 @@ class TinyDBRepository:
         admin_password = settings.ADMIN_PASSWORD
 
         if not admin_email or not admin_password:
-            logger.warning("Admin bootstrap skipped: credentials are not configured")
+            logger.warning(
+                "Admin bootstrap skipped: credentials are not configured"
+            )
             return
 
         try:
@@ -158,7 +174,8 @@ class TinyDBRepository:
             User = Query()
             existing = db.search(User.key == admin_email)
             if existing:
-                # Если уже есть – ничего не делаем, можно проверить роль (но обычно не нужно)
+                # Если уже есть – ничего не делаем, можно проверить роль
+                # (но обычно не нужно)
                 logger.info(
                     "Admin user already exists",
                     extra={"username": admin_email},
@@ -189,4 +206,4 @@ class TinyDBRepository:
 
 def get_tinydb_repo() -> TinyDBRepository:
     """Dependency для получения экземпляра репозитория."""
-    return TinyDBRepository(db_path=f"data/storage/{settings.tiny_db_path}")
+    return TinyDBRepository(db_path=_tiny_db_file_path())

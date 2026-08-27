@@ -28,8 +28,8 @@ services:
 
   upd_sites:
     volumes:
-      - ./updating_sites/src:/opt/app
-      - ./common:/opt/app/common
+      - ./updating_sites/src:/app/src
+      - ./common:/app/src/common
     env_file:
       - .env.upd_sites
     ports:

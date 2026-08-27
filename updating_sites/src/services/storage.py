@@ -1,14 +1,22 @@
 import abc
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
-from tinydb import TinyDB, Query  # type: ignore[import-not-found]
+from tinydb import Query, TinyDB
 
 from core.logger import get_logger
 from core.settings import settings
 
 
 logger = get_logger(__name__)
+
+
+def _tiny_db_file_path() -> str:
+    """Абсолютный путь к файлу TinyDB под base_dir/data/storage."""
+    return str(
+        Path(settings.base_dir) / "data" / "storage" / settings.tiny_db_path
+    )
 
 
 class BaseStorage(abc.ABC):
@@ -26,18 +34,20 @@ class BaseStorage(abc.ABC):
 class TinyDBStorage(BaseStorage):
     """
     Implementation of a storage using TinyDB.
-    Каждое состояние хранится как отдельный документ {"key": "...", "value": ...}
+    Каждое состояние хранится как отдельный документ
+    {"key": "...", "value": ...}
     """
 
     def __init__(self, file_path: str) -> None:
-        # TinyDB сам создает файл, если его нет
-        self.db = TinyDB(file_path)
+        # TinyDB сам создает файл и каталоги, если их нет
+        self.db = TinyDB(file_path, create_dirs=True)
         self.query = Query()
 
     def set_state(self, key: str, value: Any) -> bool:
         """Set the state for a key using upsert."""
         try:
-            # upsert: если документ с таким ключом есть — обновит, если нет — создаст
+            # upsert: если документ с таким ключом есть — обновит,
+            # если нет — создаст
             self.db.upsert({"key": key, "value": value}, self.query.key == key)
             return True
         except Exception as error:
@@ -54,7 +64,7 @@ class TinyDBStorage(BaseStorage):
             # Ищем документ по ключу
             doc = self.db.get(self.query.key == key)
             return doc["value"] if doc else default
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             logger.warning(
                 "Storage read failed",
                 extra={"key": key, "error": str(error)},
@@ -67,7 +77,8 @@ class State:
     """Class for working with states."""
 
     # Теперь этот класс просто проксирует вызовы к хранилищу,
-    # так как вся логика перенесена в TinyDBStorage для максимальной производительности.
+    # так как вся логика перенесена в TinyDBStorage для максимальной
+    # производительности.
 
     def __init__(self, storage: BaseStorage) -> None:
         self.storage = storage
@@ -81,6 +92,6 @@ class State:
         return self.storage.get_state(key, default)
 
 
-@lru_cache()
-def get_storage(path: str = f"data/storage/{settings.tiny_db_path}") -> State:
-    return State(TinyDBStorage(path))
+@lru_cache
+def get_storage(path: str | None = None) -> State:
+    return State(TinyDBStorage(path or _tiny_db_file_path()))

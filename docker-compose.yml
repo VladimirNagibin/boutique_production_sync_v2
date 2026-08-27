@@ -81,6 +81,7 @@ services:
     build:
       context: .
       dockerfile: updating_sites/Dockerfile
+      target: development
     depends_on:
       seq:
         condition: service_healthy
