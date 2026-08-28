@@ -15,6 +15,7 @@ from common.exceptions.file import (
     FileNotZipError,
     FileSystemError,
     FileTooLargeError,
+    FileUploadError,
     ZipExtractionError,
 )
 from core.logger import get_logger
@@ -29,6 +30,7 @@ logger = get_logger(__name__)
 DEFAULT_UPLOAD_DIR: Final[str] = "uploads"
 DEFAULT_MAX_FILE_SIZE: Final[int] = 100 * 1024 * 1024  # 100 MB
 CHUNK_SIZE: Final[int] = 1024 * 1024  # 1 MB
+CSV_OR_ZIP_EXTENSIONS: Final[frozenset[str]] = frozenset({".csv", ".zip"})
 
 
 class FileUploader:
@@ -146,6 +148,82 @@ class FileUploader:
                 details={"original_error": str(e)},
             ) from e
 
+    async def upload_csv_or_zip(
+        self, file: UploadFile, save_subpath: str | None = None
+    ) -> SuccessResponse:
+        """
+        Асинхронно сохраняет CSV или ZIP с проверкой размера.
+
+        Args:
+            file: Загружаемый файл.
+            save_subpath: Поддиректория внутри upload_dir.
+
+        Returns:
+            SuccessResponse с деталями сохранённого файла.
+
+        Raises:
+            FileUploadError: Если расширение не .csv и не .zip.
+            FileTooLargeError: Если файл превышает лимит размера.
+            ZipExtractionError: Если ZIP-архив повреждён.
+            FileSystemError: При ошибках записи на диск.
+        """
+        original_name = file.filename or "unknown_upload.csv"
+        logger.info(
+            "Starting CSV or ZIP upload",
+            extra={"file_name": original_name, "subpath": save_subpath},
+        )
+        self._validate_csv_or_zip_extension(file)
+        save_dir = self._get_save_directory(save_subpath)
+        unique_name = self._generate_unique_filename(original_name)
+        file_path = save_dir / unique_name
+        is_zip = Path(original_name).suffix.lower() == ".zip"
+
+        try:
+            file_size = await self._save_file_with_size_check(
+                file=file, file_path=file_path
+            )
+            zip_info: dict[str, Any] = {"is_zip": is_zip}
+            if is_zip:
+                zip_info.update(await self._validate_zip_file(file_path))
+            file_info = self._build_file_info(
+                original_filename=original_name,
+                saved_filename=unique_name,
+                file_path=file_path,
+                file_size=file_size,
+                zip_info=zip_info,
+            )
+            logger.info(
+                "File uploaded successfully",
+                extra={"path": str(file_path), "size": file_size},
+            )
+            return SuccessResponse(
+                message="File uploaded successfully",
+                details=file_info,
+            )
+        except (
+            FileTooLargeError,
+            ZipExtractionError,
+            FileUploadError,
+        ) as e:
+            logger.warning(
+                "File validation failed",
+                extra={"file_name": original_name, "error": str(e)},
+            )
+            await self._safe_remove_file(file_path)
+            raise
+        except Exception as e:
+            logger.error(
+                "Unexpected error during file upload",
+                extra={"file_name": original_name, "error": str(e)},
+                exc_info=True,
+            )
+            await self._safe_remove_file(file_path)
+            raise FileSystemError(
+                path=file_path,
+                message=ErrorMessages.SAVE_FAILED.message,
+                details={"original_error": str(e)},
+            ) from e
+
     # ----- Приватные методы -----
 
     def _validate_extension(self, file: UploadFile) -> None:
@@ -163,6 +241,24 @@ class FileUploader:
             raise FileNotZipError(
                 path=file.filename or "unknown",
                 message=ErrorMessages.NOT_ZIP.message,
+            )
+
+    def _validate_csv_or_zip_extension(self, file: UploadFile) -> None:
+        """
+        Проверяет, что файл имеет расширение .csv или .zip.
+
+        Raises:
+            FileUploadError: Если расширение недопустимо.
+        """
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in CSV_OR_ZIP_EXTENSIONS:
+            logger.warning(
+                "Invalid file extension",
+                extra={"file_name": file.filename},
+            )
+            raise FileUploadError(
+                path=file.filename or "unknown",
+                message="File must be CSV or ZIP",
             )
 
     def _get_save_directory(self, save_subpath: str | None = None) -> Path:
