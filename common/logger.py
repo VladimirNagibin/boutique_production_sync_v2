@@ -4,34 +4,44 @@
 файл с ротацией и удалённый сервер Seq.
 Отправка в Seq выполняется в фоновом потоке через очередь,
 чтобы не блокировать async event loop и не вызывать deadlock.
-Добавляет в каждую запись информацию о модуле, классе и методе вызова.
+Добавляет в каждую запись путь модуля и имя функции
+из стандартных полей LogRecord (pathname, funcName), без inspect.stack().
 """
 
 from __future__ import annotations
 
 import atexit
-import inspect
 import json
 import logging
 import logging.config
+import os
 import queue
 import sys
 import threading
 import time
-
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
 import requests
-
 from pythonjsonlogger.json import JsonFormatter
 from requests.exceptions import RequestException
 
-from .settings import settings
+from .log_context import (
+    get_class_name,
+    get_job_name,
+    get_request_id,
+    get_run_id,
+)
+from .log_redact import (
+    is_safe_log_key,
+    redact_key_value,
+    redact_log_value,
+    redact_text,
+)
+from .settings import AppSettings, SeqSettings, load_prefixed_settings
 from .utils import FILTER_FIELDS, SYSTEM_FIELDS, LogLevel
-
 
 # ===== Константы настройки =====
 SEQ_BATCH_SIZE = 50
@@ -363,14 +373,18 @@ class SeqClefFormatter(logging.Formatter):
             if key not in properties and key not in SYSTEM_FIELDS:
                 # Сериализуем сложные объекты в строки
                 if isinstance(value, str | int | float | bool | type(None)):
-                    properties[key] = value
+                    if isinstance(value, str) and not is_safe_log_key(key):
+                        properties[key] = redact_key_value(key, value)
+                    else:
+                        properties[key] = value
                 else:
+                    redacted = redact_log_value(key, value)
                     try:
                         properties[key] = json.dumps(
-                            value, default=str, ensure_ascii=False
+                            redacted, default=str, ensure_ascii=False
                         )
                     except Exception:  # noqa: BLE001
-                        properties[key] = str(value)
+                        properties[key] = str(redacted)
 
         # Добавляем свойства к событиям
         if properties:
@@ -379,42 +393,49 @@ class SeqClefFormatter(logging.Formatter):
         return json.dumps(event, ensure_ascii=False)
 
 
-# ===== Фильтр для добавления информации о вызывающем коде =====
+# ===== Фильтр контекста, caller info и маскирования =====
 class CallerInfoFilter(logging.Filter):
     """
-    Фильтр, добавляющий в запись поля module_name, class_name, method_name.
+    Добавляет module_name/method_name из LogRecord, поля корреляции
+    из ContextVar и маскирует секреты в extra.
+
+    Не вызывает inspect.stack(). class_name берётся из extra или контекста.
+    Фильтр вешается на root-логгер один раз.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            stack = inspect.stack()
-            for frame_info in stack[1:]:
-                filename = frame_info.filename
-                if (
-                    filename == __file__
-                    or "logging" in filename
-                    or "/logging/" in filename
-                    or "\\logging\\" in filename
-                ):
-                    continue
-                record.module_name = filename
-                record.method_name = frame_info.function
+        if not getattr(record, "module_name", None):
+            record.module_name = record.pathname or ""
+        if not getattr(record, "method_name", None):
+            record.method_name = record.funcName or ""
+        if not getattr(record, "class_name", None):
+            record.class_name = get_class_name() or ""
 
-                # Пытаемся найти self или cls
-                frame_locals = frame_info.frame.f_locals
-                obj = frame_locals.get("self") or frame_locals.get("cls")
-                record.class_name = obj.__class__.__name__ if obj else ""
-                break
-            else:
-                record.module_name = ""
-                record.class_name = ""
-                record.method_name = ""
-        except Exception as e:  # noqa: BLE001
-            # Ошибки интроспекции – не ломаем логирование, заполняем пустыми
-            logging.getLogger(__name__).debug(
-                "Introspection error: %s", e, exc_info=True
-            )
-            record.module_name = record.class_name = record.method_name = ""
+        request_id = getattr(record, "request_id", None) or get_request_id()
+        if request_id:
+            record.request_id = request_id
+            if not getattr(record, "correlation_id", None):
+                record.correlation_id = request_id
+
+        run_id = getattr(record, "run_id", None) or get_run_id()
+        if run_id:
+            record.run_id = run_id
+
+        job_name = getattr(record, "job_name", None) or get_job_name()
+        if job_name:
+            record.job_name = job_name
+
+        for key, value in list(record.__dict__.items()):
+            if key in SYSTEM_FIELDS:
+                continue
+            if is_safe_log_key(key) and isinstance(value, str):
+                continue
+            if isinstance(value, str):
+                setattr(record, key, redact_key_value(key, value))
+            elif isinstance(value, dict | list | tuple):
+                setattr(record, key, redact_log_value(key, value))
+        if isinstance(record.msg, str):
+            record.msg = redact_text(record.msg)
         return True
 
 
@@ -430,89 +451,92 @@ json_formatter = JsonFormatter(
 
 
 # ===== Конфигурация логирования (dictConfig) =====
-LOGGING_CONFIG: dict[str, Any] = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "filters": {
-        "caller_info": {"()": CallerInfoFilter},
-    },
-    "formatters": {
-        "json": {
-            "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
-            "fmt": (
-                "%(asctime)s %(levelname)s %(name)s %(module_name)s "
-                "%(class_name)s %(method_name)s %(message)s"
-            ),
-            "datefmt": "%Y-%m-%dT%H:%M:%S",
+def _build_logging_config(log_level: str | LogLevel) -> dict[str, Any]:
+    """Собирает dictConfig с уровнем из настроек сервиса."""
+    level = str(log_level)
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "filters": {
+            "caller_info": {"()": CallerInfoFilter},
         },
-        "default": {
-            "()": "uvicorn.logging.DefaultFormatter",
-            "fmt": "%(levelprefix)s %(message)s",
-            "use_colors": None,
+        "formatters": {
+            "json": {
+                "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
+                "fmt": (
+                    "%(asctime)s %(levelname)s %(name)s %(module_name)s "
+                    "%(class_name)s %(method_name)s %(message)s"
+                ),
+                "datefmt": "%Y-%m-%dT%H:%M:%S",
+            },
+            "default": {
+                "()": "uvicorn.logging.DefaultFormatter",
+                "fmt": "%(levelprefix)s %(message)s",
+                "use_colors": None,
+            },
+            "access": {
+                "()": "uvicorn.logging.AccessFormatter",
+                "fmt": (
+                    "%(levelprefix)s %(client_addr)s - "
+                    "'%(request_line)s' %(status_code)s"
+                ),
+            },
         },
-        "access": {
-            "()": "uvicorn.logging.AccessFormatter",
-            "fmt": (
-                "%(levelprefix)s %(client_addr)s - '%(request_line)s' %(status_code)s"
-            ),
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "json",
+                "stream": "ext://sys.stdout",
+            },
+            "default": {
+                "class": "logging.StreamHandler",
+                "formatter": "default",
+                "stream": "ext://sys.stdout",
+            },
+            "access": {
+                "class": "logging.StreamHandler",
+                "formatter": "access",
+                "stream": "ext://sys.stdout",
+            },
         },
-    },
-    "handlers": {
-        "console": {
-            "class": "logging.StreamHandler",
-            "formatter": "json",
-            "stream": "ext://sys.stdout",
-            "filters": ["caller_info"],
+        "loggers": {
+            "": {
+                "handlers": ["console"],
+                "level": level,
+                "propagate": True,
+                "filters": ["caller_info"],
+            },
+            "uvicorn.error": {
+                "level": level,
+                "handlers": ["default"],
+                "propagate": False,
+            },
+            "uvicorn.access": {
+                "level": level,
+                "handlers": ["access"],
+                "propagate": False,
+            },
         },
-        "default": {
-            "class": "logging.StreamHandler",
-            "formatter": "default",
-            "stream": "ext://sys.stdout",
-        },
-        "access": {
-            "class": "logging.StreamHandler",
-            "formatter": "access",
-            "stream": "ext://sys.stdout",
-        },
-    },
-    "loggers": {
-        "": {
-            "handlers": ["console"],
-            "level": settings.app.log_level,
-            "propagate": True,
-        },
-        "uvicorn.error": {
-            "level": settings.app.log_level,
-            "handlers": ["default"],
-            "propagate": False,
-        },
-        "uvicorn.access": {
-            "level": settings.app.log_level,
-            "handlers": ["access"],
-            "propagate": False,
-        },
-    },
-}
+    }
 
 
 # ===== Функции для создания дополнительных хендлеров =====
-def _create_file_handler() -> RotatingFileHandler | None:
+def _create_file_handler(app_settings: AppSettings) -> RotatingFileHandler | None:
     """Создаёт файловый хендлер с ротацией. Возвращает None при ошибке."""
     try:
-        log_dir = Path(settings.app.base_dir) / "logs"
+        log_dir = Path(app_settings.base_dir) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
 
         handler = RotatingFileHandler(
             log_dir / "log.json",
-            maxBytes=getattr(settings.app, "logging_file_max_bytes", FILE_MAX_BYTES),
+            maxBytes=getattr(app_settings, "logging_file_max_bytes", FILE_MAX_BYTES),
             backupCount=getattr(
-                settings.app, "logging_backup_count", FILE_BACKUP_COUNT
+                app_settings, "logging_backup_count", FILE_BACKUP_COUNT
             ),
             encoding="utf-8",
         )
         handler.setFormatter(json_formatter)
-        handler.addFilter(CallerInfoFilter())
-        handler.setLevel(settings.app.log_level)
+        handler.setLevel(app_settings.log_level)
     except (OSError, PermissionError, ValueError) as e:
         logging.getLogger(__name__).error(
             "Failed to create file handler: %s", e, exc_info=True
@@ -529,22 +553,21 @@ def _create_file_handler() -> RotatingFileHandler | None:
         return handler
 
 
-def _create_seq_handler() -> logging.Handler | None:
+def _create_seq_handler(seq_settings: SeqSettings) -> logging.Handler | None:
     """
     Создаёт хендлер для отправки логов в Seq. Возвращает None при ошибке.
     """
-    if not settings.seq.url or not settings.seq.is_enabled:
+    if not seq_settings.url or not seq_settings.is_enabled:
         return None
 
     try:
         handler = SeqJsonHandler(
-            server_url=settings.seq.url,
-            api_key=settings.seq.api_key,
+            server_url=seq_settings.url,
+            api_key=seq_settings.api_key,
             batch_size=SEQ_BATCH_SIZE,
         )
         handler.setFormatter(SeqClefFormatter())
-        handler.setLevel(getattr(logging, settings.seq.level.upper(), logging.INFO))
-        handler.addFilter(CallerInfoFilter())
+        handler.setLevel(getattr(logging, seq_settings.level.upper(), logging.INFO))
     except (ValueError, TypeError, OSError) as e:
         logging.getLogger(__name__).error(
             "Seq handler configuration error: %s", e, exc_info=True
@@ -562,7 +585,10 @@ def _create_seq_handler() -> logging.Handler | None:
 
 
 # ===== Патчинг хендлеров (инициализация) =====
-def patch_logging_handlers() -> None:
+def patch_logging_handlers(
+    app_settings: AppSettings,
+    seq_settings: SeqSettings,
+) -> None:
     """
     Добавляет файловый и Seq хендлеры к корневому логгеру (без дублирования).
     """
@@ -574,25 +600,25 @@ def patch_logging_handlers() -> None:
     seq_url = ""
 
     # 1. Файловый хендлер
-    if getattr(settings.app, "log_to_file", False):
+    if getattr(app_settings, "log_to_file", False):
         already_has_file = any(
             isinstance(h, RotatingFileHandler) for h in root.handlers
         )
         if not already_has_file:
-            file_handler = _create_file_handler()
+            file_handler = _create_file_handler(app_settings)
             if file_handler:
                 root.addHandler(file_handler)
                 file_enabled = True
 
     # 2. Seq хендлер
-    if settings.seq.url and settings.seq.is_enabled:
+    if seq_settings.url and seq_settings.is_enabled:
         already_has_seq = any(isinstance(h, SeqJsonHandler) for h in root.handlers)
         if not already_has_seq:
-            seq_handler = _create_seq_handler()
+            seq_handler = _create_seq_handler(seq_settings)
             if seq_handler:
                 root.addHandler(seq_handler)
                 seq_enabled = True
-                seq_url = settings.seq.url
+                seq_url = seq_settings.url
 
     # 3. Логируем статус только ПОСЛЕ настройки,
     # чтобы логи попали в новый хендлер
@@ -601,6 +627,10 @@ def patch_logging_handlers() -> None:
 
     if seq_enabled:
         logging.getLogger(__name__).info("Seq logging enabled: %s", seq_url)
+    else:
+        logging.getLogger(__name__).info(
+            "Seq logging disabled (set SEQ_ENABLED=true and SEQ_URL)"
+        )
 
 
 # ===== Настройка уровня логов внешних библиотек =====
@@ -610,6 +640,8 @@ logging.getLogger("requests").setLevel(logging.WARNING)
 
 # ===== Инициализация модуля =====
 _init_done = False
+_app_settings: AppSettings | None = None
+_seq_settings: SeqSettings | None = None
 
 
 def _shutdown_logging() -> None:
@@ -627,31 +659,45 @@ def _shutdown_logging() -> None:
     logging.shutdown()
 
 
-def _init_logging() -> None:
-    """Инициализация логирования при импорте модуля."""
-    global _init_done
+def configure_logging(*, env_file: str | Path | None = None) -> None:
+    """
+    Инициализирует логирование из APP_* / SEQ_* (process env и файл сервиса).
+
+    Идемпотентно: повторные вызовы игнорируются.
+    Вызывать из ``core.logger`` сервиса до первого get_logger.
+
+    Args:
+        env_file: ``.env.price_flow`` / ``.env.converter`` / ``.env.upd_sites``.
+            Если None — берётся ENV_FILE или только process env (Docker).
+    """
+    global _init_done, _app_settings, _seq_settings
     if _init_done:
         return
 
-    logging.config.dictConfig(LOGGING_CONFIG)
-    patch_logging_handlers()
+    resolved = env_file or os.getenv("ENV_FILE")
+    _app_settings = load_prefixed_settings(AppSettings, resolved)
+    _seq_settings = load_prefixed_settings(SeqSettings, resolved)
 
-    # Настройка логгера приложения
+    logging.config.dictConfig(_build_logging_config(_app_settings.log_level))
+    patch_logging_handlers(_app_settings, _seq_settings)
+
     sync_logger = logging.getLogger("sync")
     sync_logger.propagate = True
-    sync_logger.setLevel(getattr(settings.app, "log_level", LogLevel.INFO))
+    sync_logger.setLevel(getattr(_app_settings, "log_level", LogLevel.INFO))
 
     atexit.register(_shutdown_logging)
     _init_done = True
 
 
-# ===== Точка входа настройки =====
-_init_logging()
-
-# Глобальный логгер
-logger = logging.getLogger(__name__)
+def get_app_settings() -> AppSettings:
+    """Возвращает настройки приложения, использованные логгером."""
+    configure_logging()
+    if _app_settings is None:
+        raise RuntimeError("Logging AppSettings were not initialized")
+    return _app_settings
 
 
 def get_logger(name: str) -> logging.Logger:
     """Возвращает настроенный логгер указанного модуля."""
+    configure_logging()
     return logging.getLogger(name)

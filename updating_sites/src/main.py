@@ -11,6 +11,7 @@ from api.v1.storage import storage
 from api.v1.tiny_admin import router as admin_router
 from api.v1.update_portal import upd_portal
 from api.v1.upload_file import upload_file_router
+from common.request_context_middleware import RequestContextMiddleware
 from core.logger import get_logger
 from core.settings import settings
 from middleware.auth_middleware import AuthMiddleware
@@ -21,7 +22,7 @@ logger = get_logger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     repo: TinyDBRepository = get_tinydb_repo()
     logger.info(
         "Application startup initializing",
@@ -63,11 +64,12 @@ app.include_router(dropbox_router, prefix="/api/v1/dropbox", tags=["dropbox"])
 app.include_router(admin_router, prefix="/api/v1/tiny", tags=["storage"])
 
 app.add_middleware(AuthMiddleware)
+app.add_middleware(RequestContextMiddleware)
 
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
+        host="0.0.0.0",  # noqa: S104
         port=8000,
         log_config=None,
         log_level=settings.APP_LOG_LEVEL,

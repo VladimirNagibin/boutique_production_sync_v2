@@ -30,6 +30,8 @@ from common.exceptions.app_exceptions import (
 )
 from common.exceptions.base import BaseAppException
 from common.exceptions.file import FileAppNotFoundError
+from common.log_context import bind_class, log_run
+from common.log_redact import redact_url
 from core.logger import get_logger
 from core.settings import settings
 from models.supplier_models import SupplierProductCode
@@ -119,7 +121,7 @@ class PriceLoader:
         self.target_filename = target_filename
         self._drive_service = None
 
-        logger.info(
+        logger.debug(
             "PriceLoader initialized",
             extra={"supplier_id": supplier_id},
         )
@@ -136,140 +138,146 @@ class PriceLoader:
         Returns:
             UploadResult: результат загрузки обработанного файла.
         """
-        logger.info(
-            "Starting supplier price processing",
-            extra={"supplier_id": self.supplier_id},
-        )
         start_time = datetime.now(UTC)
         enriched_file_path: Path | None = None
         details: dict[str, Any] = {}
-        try:
-            # 1. Получение ссылки из почты
+        with bind_class(self), log_run("process_price"):
             logger.info(
-                "Fetching supplier price location",
+                "Starting supplier price processing",
                 extra={"supplier_id": self.supplier_id},
             )
-            drive_link = await self._get_latest_drive_link()
-            self._validate_drive_link(drive_link)
-            logger.info(
-                "Supplier price location found",
-                extra={"supplier_id": self.supplier_id},
-            )
-            details["drive_link"] = drive_link
+            try:
+                # 1. Получение ссылки из почты
+                logger.debug(
+                    "Fetching supplier price location",
+                    extra={"supplier_id": self.supplier_id},
+                )
+                drive_link = await self._get_latest_drive_link()
+                self._validate_drive_link(drive_link)
+                logger.debug(
+                    "Supplier price location found",
+                    extra={"supplier_id": self.supplier_id},
+                )
+                details["drive_link"] = (
+                    redact_url(drive_link) if drive_link else drive_link
+                )
 
-            # 2. Поиск файла в Google Drive
-            logger.info(
-                "Searching for supplier price file",
-                extra={
-                    "supplier_id": self.supplier_id,
-                    "target_count": len(self.target_filename),
-                },
-            )
-            file_id, filename = await self._find_file_in_drive(
-                drive_link,  # type: ignore[arg-type]
-                self.target_filename,
-            )
-            self._validate_file_id(file_id, self.target_filename)  # type: ignore[arg-type]
-            logger.info(
-                "Supplier price file found",
-                extra={
-                    "supplier_id": self.supplier_id,
-                    "file_name": filename,
-                },
-            )
-            details["file_id"] = file_id
-            details["filename"] = filename
+                # 2. Поиск файла в Google Drive
+                logger.debug(
+                    "Searching for supplier price file",
+                    extra={
+                        "supplier_id": self.supplier_id,
+                        "target_count": len(self.target_filename),
+                    },
+                )
+                file_id, filename = await self._find_file_in_drive(
+                    drive_link,  # type: ignore[arg-type]
+                    self.target_filename,
+                )
+                self._validate_file_id(file_id, self.target_filename)  # type: ignore[arg-type]
+                logger.debug(
+                    "Supplier price file found",
+                    extra={
+                        "supplier_id": self.supplier_id,
+                        "file_name": filename,
+                    },
+                )
+                details["file_id"] = file_id
+                details["filename"] = filename
 
-            # 3. Скачивание файла
-            if not output_filename:
-                timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-                output_filename = f"price_{self.supplier_id}_{timestamp}.xlsx"
+                # 3. Скачивание файла
+                if not output_filename:
+                    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+                    output_filename = (
+                        f"price_{self.supplier_id}_{timestamp}.xlsx"
+                    )
 
-            output_path = settings.app.base_dir / Path(
-                f"uploads/{output_filename}"
-            )
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path = settings.app.base_dir / Path(
+                    f"uploads/{output_filename}"
+                )
+                output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            logger.info(
-                "Downloading supplier price file",
-                extra={
-                    "supplier_id": self.supplier_id,
-                    "file_name": output_path.name,
-                },
-            )
-            await self._download_file(file_id, output_path)  # type: ignore[arg-type]
-            details["output_path"] = output_path
+                logger.debug(
+                    "Downloading supplier price file",
+                    extra={
+                        "supplier_id": self.supplier_id,
+                        "file_name": output_path.name,
+                    },
+                )
+                await self._download_file(file_id, output_path)  # type: ignore[arg-type]
+                details["output_path"] = output_path
 
-            # 4. Получение данных поставщика
-            logger.info(
-                "Loading supplier reference data",
-                extra={"supplier_id": self.supplier_id},
-            )
-            supplier_df = await self._get_supplier_data_async()
+                # 4. Получение данных поставщика
+                logger.debug(
+                    "Loading supplier reference data",
+                    extra={"supplier_id": self.supplier_id},
+                )
+                supplier_df = await self._get_supplier_data_async()
 
-            # 5. Обработка Excel файла
-            logger.info(
-                "Processing supplier price workbook",
-                extra={"supplier_id": self.supplier_id},
-            )
-            (
-                enriched_file_path,
-                details_process_excel_file,
-            ) = await self._process_excel_file(output_path, supplier_df)
-            details["enriched_file_path"] = enriched_file_path
-            details.update(details_process_excel_file)
+                # 5. Обработка Excel файла
+                logger.debug(
+                    "Processing supplier price workbook",
+                    extra={"supplier_id": self.supplier_id},
+                )
+                (
+                    enriched_file_path,
+                    details_process_excel_file,
+                ) = await self._process_excel_file(output_path, supplier_df)
+                details["enriched_file_path"] = enriched_file_path
+                details.update(details_process_excel_file)
 
-            # 6. Конвертация
-            logger.info(
-                "Uploading processed price to converter",
-                extra={
-                    "supplier_id": self.supplier_id,
-                    "file_name": enriched_file_path.name,
-                },
-            )
-            upload_result = self.file_uploader.upload_file(enriched_file_path)
+                # 6. Конвертация
+                logger.debug(
+                    "Uploading processed price to converter",
+                    extra={
+                        "supplier_id": self.supplier_id,
+                        "file_name": enriched_file_path.name,
+                    },
+                )
+                upload_result = self.file_uploader.upload_file(
+                    enriched_file_path
+                )
 
-            # 7. Статистика
-            elapsed = (datetime.now(UTC) - start_time).total_seconds()
-            details["elapsed"] = elapsed
-            logger.info(
-                "Price processing completed",
-                extra={
-                    "time_seconds": elapsed,
-                    "result_path": str(enriched_file_path),
-                    "supplier_id": self.supplier_id,
-                    "converter_success": upload_result.success,
-                },
-            )
+                # 7. Статистика
+                elapsed = (datetime.now(UTC) - start_time).total_seconds()
+                details["elapsed"] = elapsed
+                logger.info(
+                    "Price processing completed",
+                    extra={
+                        "time_seconds": elapsed,
+                        "result_path": str(enriched_file_path),
+                        "supplier_id": self.supplier_id,
+                        "converter_success": upload_result.success,
+                    },
+                )
 
-        except BaseAppException as e:
-            logger.warning(
-                "Supplier price processing failed",
-                extra={
-                    "supplier_id": self.supplier_id,
-                    "error_type": type(e).__name__,
-                },
-            )
-            raise
-        except Exception as e:
-            logger.exception(
-                "Unexpected supplier price processing error",
-                extra={
-                    "supplier_id": self.supplier_id,
-                    "error_type": type(e).__name__,
-                },
-            )
-            # Оборачиваем неизвестные исключения
-            raise PriceProcessingError(
-                error_code="PRICE_PROCESSING_ERROR",
-                message="Unexpected error during price processing",
-                details=str(e),
-            ) from e
-        else:
-            return upload_result, details
-        finally:
-            if enriched_file_path and enriched_file_path.exists():
-                await self._cleanup_temp_files([enriched_file_path])
+            except BaseAppException as e:
+                logger.warning(
+                    "Supplier price processing failed",
+                    extra={
+                        "supplier_id": self.supplier_id,
+                        "error_type": type(e).__name__,
+                    },
+                )
+                raise
+            except Exception as e:
+                logger.exception(
+                    "Unexpected supplier price processing error",
+                    extra={
+                        "supplier_id": self.supplier_id,
+                        "error_type": type(e).__name__,
+                    },
+                )
+                raise PriceProcessingError(
+                    error_code="PRICE_PROCESSING_ERROR",
+                    message="Unexpected error during price processing",
+                    details=str(e),
+                ) from e
+            else:
+                return upload_result, details
+            finally:
+                if enriched_file_path and enriched_file_path.exists():
+                    await self._cleanup_temp_files([enriched_file_path])
 
     # ----- Работа с почтой -----
     async def _get_latest_drive_link(self) -> str | None:
@@ -325,7 +333,7 @@ class PriceLoader:
             total_messages = len(message_ids)
             scan_limit = min(self.EMAIL_SCAN_LIMIT, total_messages)
 
-            logger.info(
+            logger.debug(
                 f"Scanning last {scan_limit} of {total_messages} messages"
             )
 
@@ -348,7 +356,7 @@ class PriceLoader:
                             # Извлекаем ссылку
                             link = self._extract_link_from_email_body(msg)
                             if link:
-                                logger.info("Link found")
+                                logger.debug("Link found")
                                 mail.close()
                                 mail.logout()
                                 return link
@@ -627,7 +635,7 @@ class PriceLoader:
             filename_lower = filename.lower()
             for file in files:
                 if filename_lower in file["name"].lower():
-                    logger.info(
+                    logger.debug(
                         "File found",
                         extra={"file_name": file["name"]},
                     )
@@ -718,7 +726,7 @@ class PriceLoader:
             await asyncio.to_thread(
                 self._download_file_sync, file_id, output_path
             )
-            logger.info(
+            logger.debug(
                 "Supplier price file downloaded",
                 extra={
                     "supplier_id": self.supplier_id,
@@ -776,7 +784,7 @@ class PriceLoader:
             # Проверяем, что файл скачан
             if output_path.exists() and output_path.stat().st_size > 0:
                 file_size_mb = output_path.stat().st_size / (1024 * 1024)
-                logger.info(
+                logger.debug(
                     "Supplier price download written",
                     extra={
                         "file_name": output_path.name,
@@ -813,7 +821,7 @@ class PriceLoader:
             )
             self._validate_supplier_data(supplier_data)
 
-            logger.info(
+            logger.debug(
                 "Supplier data loaded",
                 extra={
                     "supplier_id": self.supplier_id,
@@ -871,12 +879,12 @@ class PriceLoader:
         details: dict[str, Any] = {}
         try:
             # 1. Чтение Excel файла
-            logger.info("Reading Excel file", extra={"path": str(file_path)})
+            logger.debug("Reading Excel file", extra={"path": str(file_path)})
             excel_df, header_row = await asyncio.to_thread(
                 self._read_excel_with_header, file_path
             )
             details["len_excel"] = len(excel_df)
-            logger.info(
+            logger.debug(
                 "Supplier price workbook loaded",
                 extra={
                     "row_count": len(excel_df),
@@ -885,7 +893,7 @@ class PriceLoader:
             )
 
             # 2. Объединение данных
-            logger.info("Merging with supplier data")
+            logger.debug("Merging with supplier data")
             merged_df = await asyncio.to_thread(
                 self._merge_with_supplier_data,
                 excel_df,
@@ -894,20 +902,20 @@ class PriceLoader:
             )
 
             # 3. Заполнение пропусков
-            logger.info("Filling missing data")
+            logger.debug("Filling missing data")
             filled_df = await asyncio.to_thread(
                 self._fill_missing_data, merged_df
             )
 
             # 4. Применение правил обработки
-            logger.info("Applying processing rules")
+            logger.debug("Applying processing rules")
             processed_df = await asyncio.to_thread(
                 self._apply_processing_rules, filled_df, details
             )
 
             # 5. Сохранение результата
             output_file = self._generate_output_filename(file_path)
-            logger.info("Saving result", extra={"path": str(output_file)})
+            logger.debug("Saving result", extra={"path": str(output_file)})
 
             await asyncio.to_thread(
                 self._save_to_excel_with_formatting,
@@ -1075,7 +1083,7 @@ class PriceLoader:
             matches = merged_df["category"].notna().sum()
             match_percentage = (matches / len(merged_df)) * 100
 
-            logger.info(
+            logger.debug(
                 "Merge statistics",
                 extra={
                     "matches": matches,
@@ -1408,7 +1416,7 @@ class PriceLoader:
 
             # Сохраняем
             wb.save(output_file)
-            logger.info(
+            logger.debug(
                 "Processed supplier price workbook saved",
                 extra={
                     "file_name": output_file.name,
@@ -1493,7 +1501,7 @@ class PriceLoader:
             #     (total_rows - subgroup_missing) / total_rows
             # ) * 100
 
-            logger.info(
+            logger.debug(
                 "Processing statistics",
                 extra={
                     "total_rows": total_rows,

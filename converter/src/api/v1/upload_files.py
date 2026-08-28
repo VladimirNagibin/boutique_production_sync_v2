@@ -1,8 +1,9 @@
-from http import HTTPStatus
 import os
-from typing import Any
 import uuid
+from http import HTTPStatus
+from typing import Annotated, Any
 
+import aiofiles
 import aiofiles.os as aios
 from fastapi import (
     APIRouter,
@@ -16,9 +17,12 @@ from fastapi.responses import FileResponse
 from pydantic import UUID4
 from redis import exceptions as redis_errors
 
+from common.log_context import get_request_id
 from core.logger import get_logger
 from core.settings import settings
 from db.redis_client import RedisClient, get_redis
+from services.tasks import CORR_KEY_PREFIX
+
 
 logger = get_logger(__name__)
 
@@ -31,7 +35,8 @@ upload_file_router = APIRouter()
     description="Upload file for convert.",
 )
 async def upload_file(
-    file: UploadFile = File(...), redis: RedisClient = Depends(get_redis)
+    file: Annotated[UploadFile, File(...)],
+    redis: Annotated[RedisClient, Depends(get_redis)],
 ) -> dict[str, Any]:
     """
     Асинхронно загружает файл на сервер.
@@ -41,26 +46,32 @@ async def upload_file(
     logger.info(
         "File upload started",
         extra={
-            "token": file_name,
-            "file_name": file.filename,
-            "byte_count": byte_count,
+            "file_id": file_name,
+            "original_file_name": file.filename,
         },
     )
     try:
         tmp_file_path = os.path.join(
             settings.BASE_DIR, settings.UPLOAD_DIR, "in", file_name
         )
-        with open(tmp_file_path, "wb") as buffer:
+        async with aiofiles.open(tmp_file_path, "wb") as buffer:
             while chunk := await file.read(settings.CHUNK):
-                buffer.write(chunk)
+                await buffer.write(chunk)
                 byte_count += len(chunk)
         await redis.set(name=file_name, value=settings.LOAD, ex=settings.TTL)
+        correlation_id = get_request_id()
+        if correlation_id:
+            await redis.set(
+                name=f"{CORR_KEY_PREFIX}{file_name}",
+                value=correlation_id,
+                ex=settings.TTL,
+            )
     except (FileNotFoundError, PermissionError) as error:
         logger.exception(
             "File upload storage failed",
             extra={
-                "token": file_name,
-                "filename": file.filename,
+                "file_id": file_name,
+                "original_file_name": file.filename,
                 "byte_count": byte_count,
             },
         )
@@ -71,8 +82,8 @@ async def upload_file(
         logger.error(
             "File upload Redis update failed",
             extra={
-                "token": file_name,
-                "filename": file.filename,
+                "file_id": file_name,
+                "original_file_name": file.filename,
                 "byte_count": byte_count,
                 "error_type": type(error).__name__,
             },
@@ -84,8 +95,8 @@ async def upload_file(
         logger.exception(
             "Unexpected file upload failure",
             extra={
-                "token": file_name,
-                "filename": file.filename,
+                "file_id": file_name,
+                "original_file_name": file.filename,
                 "byte_count": byte_count,
             },
         )
@@ -96,8 +107,8 @@ async def upload_file(
     logger.info(
         "File upload completed",
         extra={
-            "token": file_name,
-            "filename": file.filename,
+            "file_id": file_name,
+            "original_file_name": file.filename,
             "byte_count": byte_count,
         },
     )
@@ -114,19 +125,23 @@ async def upload_file(
     description="Get converted file.",
 )
 async def get_file(
-    id: UUID4, response: Response, redis: RedisClient = Depends(get_redis)
+    id: UUID4,
+    response: Response,
+    redis: Annotated[RedisClient, Depends(get_redis)],
 ) -> FileResponse:
     """
-    Асинхронно получает файл с сервера.
+    Асинхронно получает файл с сервера.  # noqa: RUF000
     """
     token = str(id)
     download_filename = "tmp.xls"
-    file_path = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "out", token)
+    file_path = os.path.join(
+        settings.BASE_DIR, settings.UPLOAD_DIR, "out", token
+    )
     logger.info(
         "File download started",
         extra={
-            "token": token,
-            "filename": download_filename,
+            "file_id": token,
+            "original_file_name": download_filename,
             "byte_count": 0,
         },
     )
@@ -134,8 +149,8 @@ async def get_file(
         logger.warning(
             "File download not found",
             extra={
-                "token": token,
-                "filename": download_filename,
+                "file_id": token,
+                "original_file_name": download_filename,
                 "byte_count": 0,
             },
         )
@@ -147,8 +162,8 @@ async def get_file(
     logger.info(
         "File download prepared",
         extra={
-            "token": token,
-            "filename": download_filename,
+            "file_id": token,
+            "original_file_name": download_filename,
             "byte_count": stat_result.st_size,
         },
     )

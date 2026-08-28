@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, cast
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
+from common.log_context import bind_log_context, reset_log_context
+from common.request_context_middleware import REQUEST_ID_HEADER
 from core.logger import get_logger
 
 
@@ -47,125 +49,111 @@ class ExecutionTimeMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         """Обрабатывает входящий запрос и исходящий ответ."""
         start_time = time.perf_counter()
-        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        request_id = request.headers.get(REQUEST_ID_HEADER, str(uuid.uuid4()))
         request.state.request_id = request_id
         request.state.request_started_at = start_time
+        context_tokens = bind_log_context(request_id=request_id)
 
-        # Передаем управление следующему middleware или эндпоинту
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
 
-        execution_time = round((time.perf_counter() - start_time) * 1000.0, 4)
-        request.state.execution_time_ms = execution_time
-        response.headers["X-Request-ID"] = request_id
-        response.headers["X-Execution-Time-Ms"] = str(execution_time)
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            execution_time = round(elapsed_ms, 4)
+            request.state.execution_time_ms = execution_time
+            response.headers[REQUEST_ID_HEADER] = request_id
+            response.headers["X-Execution-Time-Ms"] = str(execution_time)
 
-        if execution_time >= SLOW_REQUEST_THRESHOLD_MS:
-            logger.warning(
-                "Slow request completed",
-                extra={
-                    "request_id": request_id,
-                    "method": request.method,
-                    "path": request.url.path,
-                    "status_code": response.status_code,
-                    "execution_time_ms": execution_time,
-                    "threshold_ms": SLOW_REQUEST_THRESHOLD_MS,
-                },
-            )
-
-        # Модифицируем только JSON-ответы
-        content_type = response.headers.get("content-type", "")
-        if content_type.startswith("application/json"):
-            body_iterator = getattr(response, "body_iterator", None)
-            if body_iterator is None:
+            if execution_time >= SLOW_REQUEST_THRESHOLD_MS:
                 logger.warning(
-                    "Response missing body iterator",
+                    "Slow request completed",
                     extra={
-                        "request_id": request_id,
                         "method": request.method,
                         "path": request.url.path,
+                        "status_code": response.status_code,
+                        "execution_time_ms": execution_time,
+                        "threshold_ms": SLOW_REQUEST_THRESHOLD_MS,
                     },
-                )
-                return response
-
-            body = b""
-            try:
-                async for chunk in body_iterator:
-                    # chunk должен быть bytes, используем cast для указания
-                    # типа
-                    body += cast("bytes", chunk)
-            except Exception as e:
-                logger.error(
-                    "Failed to read response body",
-                    extra={
-                        "request_id": request_id,
-                        "error_type": type(e).__name__,
-                    },
-                    exc_info=True,
-                )
-                return response
-
-            try:
-                # Пытаемся распарсить JSON для добавления метрики времени
-                data = json.loads(body.decode())
-
-                if isinstance(data, dict):
-                    data["execution_time"] = execution_time
-                    data["request_id"] = request_id
-                    # Формируем новый ответ с обновленным телом.
-                    # Удаляем Content-Length, так как длина изменилась.
-                    headers = dict(response.headers)
-                    headers.pop("content-length", None)
-
-                    return JSONResponse(
-                        content=data,
-                        status_code=response.status_code,
-                        headers=headers,
-                        media_type=response.media_type,
-                    )
-            except json.JSONDecodeError as e:
-                logger.warning(
-                    "Failed to parse JSON response",
-                    extra={
-                        "request_id": request_id,
-                        "error_type": type(e).__name__,
-                    },
-                )
-            except UnicodeDecodeError as e:
-                logger.warning(
-                    "Failed to decode response body",
-                    extra={
-                        "request_id": request_id,
-                        "error_type": type(e).__name__,
-                    },
-                )
-            except (ValueError, TypeError) as e:
-                # Неожиданный формат данных (например, data не dict)
-                logger.error(
-                    "Unexpected JSON response data format",
-                    extra={
-                        "request_id": request_id,
-                        "error_type": type(e).__name__,
-                    },
-                    exc_info=True,
-                )
-            except Exception as e:
-                # Логируем любые неожиданные ошибки при модификации
-                logger.error(
-                    "Unexpected response instrumentation error",
-                    extra={
-                        "request_id": request_id,
-                        "error_type": type(e).__name__,
-                    },
-                    exc_info=True,
                 )
 
-            # Если не смогли модифицировать JSON, возвращаем исходное тело
-            # как есть
-            return Response(
-                content=body,
-                status_code=response.status_code,
-                headers=dict(response.headers),
-                media_type=response.media_type,
+            content_type = response.headers.get("content-type", "")
+            if content_type.startswith("application/json"):
+                return await self._instrument_json_response(
+                    request, response, request_id, execution_time
+                )
+            return response
+        finally:
+            reset_log_context(context_tokens)
+
+    async def _instrument_json_response(
+        self,
+        request: Request,
+        response: Response,
+        request_id: str,
+        execution_time: float,
+    ) -> Response:
+        """Добавляет request_id и время выполнения в JSON-тело ответа."""
+        body_iterator = getattr(response, "body_iterator", None)
+        if body_iterator is None:
+            logger.warning(
+                "Response missing body iterator",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                },
+            )
+            return response
+
+        body = b""
+        try:
+            async for chunk in body_iterator:
+                body += cast("bytes", chunk)
+        except Exception as e:
+            logger.error(
+                "Failed to read response body",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
+            return response
+
+        try:
+            data = json.loads(body.decode())
+            if isinstance(data, dict):
+                data["execution_time"] = execution_time
+                data["request_id"] = request_id
+                headers = dict(response.headers)
+                headers.pop("content-length", None)
+                return JSONResponse(
+                    content=data,
+                    status_code=response.status_code,
+                    headers=headers,
+                    media_type=response.media_type,
+                )
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "Failed to parse JSON response",
+                extra={"error_type": type(e).__name__},
+            )
+        except UnicodeDecodeError as e:
+            logger.warning(
+                "Failed to decode response body",
+                extra={"error_type": type(e).__name__},
+            )
+        except (ValueError, TypeError) as e:
+            logger.error(
+                "Unexpected JSON response data format",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
+            )
+        except Exception as e:
+            logger.error(
+                "Unexpected response instrumentation error",
+                extra={"error_type": type(e).__name__},
+                exc_info=True,
             )
 
-        return response
+        return Response(
+            content=body,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type=response.media_type,
+        )

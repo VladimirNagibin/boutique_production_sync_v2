@@ -4,6 +4,8 @@ from pathlib import Path
 
 import requests
 
+from common.log_context import bind_class, get_request_id
+from common.request_context_middleware import REQUEST_ID_HEADER
 from core.logger import get_logger
 from schemas.converter_schemas import UploadResult
 
@@ -27,6 +29,11 @@ class FileUploader:
             UploadResult: Результат загрузки
         """
         path = Path(file_path)
+        with bind_class(self):
+            return self._upload_file(path)
+
+    def _upload_file(self, path: Path) -> UploadResult:
+        """Загружает файл, прокидывая X-Request-ID в converter."""
         try:
             if not path.exists():
                 logger.warning(
@@ -38,7 +45,7 @@ class FileUploader:
                     token="",
                     message="",
                     success=False,
-                    error=f"File not found: {file_path}",
+                    error=f"File not found: {path}",
                 )
 
             logger.info(
@@ -47,8 +54,15 @@ class FileUploader:
             )
             with Path.open(path, "rb") as f:
                 files = {"file": (path.name, f)}
+                headers: dict[str, str] = {}
+                request_id = get_request_id()
+                if request_id:
+                    headers[REQUEST_ID_HEADER] = request_id
                 response = requests.post(
-                    self.upload_url, files=files, timeout=30
+                    self.upload_url,
+                    files=files,
+                    headers=headers or None,
+                    timeout=30,
                 )
 
             response.raise_for_status()

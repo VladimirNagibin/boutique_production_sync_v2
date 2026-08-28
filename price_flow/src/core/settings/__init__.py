@@ -10,6 +10,7 @@ from common.exceptions.settings import (
     ProductionSettingsError,
     SettingsLoadError,
 )
+from common.settings import discover_env_file, load_prefixed_settings
 
 # from core.logger import get_logger
 from .auth import SECRET_KEY_MIN_LENGTH, AuthSettings
@@ -54,10 +55,16 @@ class Settings(BaseSettings):
 
     # ----- Секции настроек -----
     app: AppSettings = Field(
-        default_factory=AppSettings, description="Настройки приложения"
+        default_factory=lambda: load_prefixed_settings(
+            AppSettings, discover_env_file(".env.price_flow")
+        ),
+        description="Настройки приложения",
     )
     seq: SeqSettings = Field(
-        default_factory=SeqSettings, description="Настройки Seq (логирование)"
+        default_factory=lambda: load_prefixed_settings(
+            SeqSettings, discover_env_file(".env.price_flow")
+        ),
+        description="Настройки Seq (логирование)",
     )
     database: DatabaseSettings = Field(
         default_factory=DatabaseSettings, description="Настройки БД"
@@ -160,7 +167,7 @@ class Settings(BaseSettings):
         if self.app.reload:
             errors.append("APP_RELOAD must be False in production")
         if self.app.log_level == "DEBUG":
-            errors.append("LOG_LEVEL must not be DEBUG in production")
+            errors.append("APP_LOG_LEVEL must not be DEBUG in production")
         return errors
 
     def _validate_auth_production(self) -> list[str]:
