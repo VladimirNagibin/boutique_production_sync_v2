@@ -4,10 +4,15 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
 from core.logger import get_logger
+from schemas.response_schemas import SuccessResponse
 from schemas.supplier_schemas import ImportResult
 from services.prices.clothing_codes_service import (
     ClothingCodesService,
     get_clothing_codes_service,
+)
+from services.prices.load_clothing_codes import (
+    LoaderClothingCodes,
+    get_loader_clothing_codes,
 )
 
 
@@ -107,6 +112,45 @@ async def import_clothing_codes(
             "updated": result.updated,
             "skipped": result.skipped,
             "errors_count": result.errors_count,
+        },
+    )
+    return result
+
+
+@closing_codes_router.post(
+    "/load-all",
+    summary="Load supplier clothing codes from CSV",
+)
+async def load_all_clothing_codes(
+    file: Annotated[
+        UploadFile,
+        File(
+            ...,
+            description=(
+                "CSV or ZIP with CSV: id,code,name,category,subcategory,"
+                "supplier_id,product_summary,size,color,supplier_code,"
+                "description"
+            ),
+        ),
+    ],
+    loader: Annotated[LoaderClothingCodes, Depends(get_loader_clothing_codes)],
+) -> SuccessResponse:
+    """
+    Заменяет таблицу supplier_clothing_codes данными из CSV большого объёма.
+
+    Файл читается пакетами, таблица очищается (TRUNCATE) и заполняется заново.
+    Поддерживаются разделители запятая и точка с запятой.
+    """
+    logger.info(
+        "Clothing codes bulk load started",
+        extra={"file_name": file.filename},
+    )
+    result = await loader.load_file(file)
+    logger.info(
+        "Clothing codes bulk load completed",
+        extra={
+            "file_name": file.filename,
+            "rows_loaded": (result.details or {}).get("rows_loaded"),
         },
     )
     return result

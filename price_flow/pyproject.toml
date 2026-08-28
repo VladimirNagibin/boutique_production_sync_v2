@@ -266,6 +266,7 @@ ignore_missing_imports = true
 # Конфигурация pytest
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["..", "src"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
