@@ -5,7 +5,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class SettingsPortal(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env.upd_sites", env_prefix="portal_", env_file_encoding="utf-8"
+        env_file=".env.upd_sites",
+        env_prefix="portal_",
+        env_file_encoding="utf-8",
     )
     user_db: str = "user_db"
     password_db: str = "password_db"
@@ -21,25 +23,33 @@ class SettingsPortal(BaseSettings):
 
 class SettingsOrnam(SettingsPortal):
     model_config = SettingsConfigDict(
-        env_file=".env.upd_sites", env_prefix="ornam_", env_file_encoding="utf-8"
+        env_file=".env.upd_sites",
+        env_prefix="ornam_",
+        env_file_encoding="utf-8",
     )
 
 
 class SettingsButic(SettingsPortal):
     model_config = SettingsConfigDict(
-        env_file=".env.upd_sites", env_prefix="butic_", env_file_encoding="utf-8"
+        env_file=".env.upd_sites",
+        env_prefix="butic_",
+        env_file_encoding="utf-8",
     )
 
 
 class SettingsIsmy(SettingsPortal):
     model_config = SettingsConfigDict(
-        env_file=".env.upd_sites", env_prefix="ismy_", env_file_encoding="utf-8"
+        env_file=".env.upd_sites",
+        env_prefix="ismy_",
+        env_file_encoding="utf-8",
     )
 
 
 class SettingsRecipient(SettingsPortal):
     model_config = SettingsConfigDict(
-        env_file=".env.upd_sites", env_prefix="recipient_", env_file_encoding="utf-8"
+        env_file=".env.upd_sites",
+        env_prefix="recipient_",
+        env_file_encoding="utf-8",
     )
     host: str = "host"
     login: str = "login"
@@ -48,7 +58,9 @@ class SettingsRecipient(SettingsPortal):
 
 class SettingsSender(SettingsPortal):
     model_config = SettingsConfigDict(
-        env_file=".env.upd_sites", env_prefix="sender_", env_file_encoding="utf-8"
+        env_file=".env.upd_sites",
+        env_prefix="sender_",
+        env_file_encoding="utf-8",
     )
     host: str = "host"
     login: str = "login"
@@ -64,6 +76,7 @@ class Settings(BaseSettings):
     APP_RELOAD: bool = False
     APP_LOG_LEVEL: str = "DEBUG"
     APP_LOG_TO_FILE: bool = True
+    # Seq: SEQ_ENABLED, SEQ_URL, SEQ_LEVEL, SEQ_API_KEY — читает common.logger
 
     ENCRYPTION_KEY: str = "ENCRYPTION_KEY"
     CLIENT_SECRET: str = "CLIENT_SECRET"

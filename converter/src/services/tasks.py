@@ -1,18 +1,23 @@
 import asyncio
 import os
 import time
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import aiofiles.os as aios
 from redis import exceptions as redis_errors
 from redis.asyncio.client import PubSub
 
+from common.log_context import log_run
 from core.logger import get_logger
 from core.settings import settings
 from db.redis_client import RedisClient, get_redis
 from services.converter_files import convert_xlsx_to_xls
 
+
 logger = get_logger(__name__)
+
+CORR_KEY_PREFIX = "corr:"
 
 
 async def delete_file_async(file_path: str) -> None:
@@ -24,12 +29,26 @@ async def delete_file_async(file_path: str) -> None:
             return
 
         await aios.remove(file_path)
-        logger.debug("File deleted", extra={"filename": file_name})
+        logger.debug("File deleted", extra={"file_name": file_name})
     except asyncio.CancelledError:
-        logger.info("File deletion cancelled", extra={"filename": file_name})
+        logger.info("File deletion cancelled", extra={"file_name": file_name})
         raise
     except Exception:
-        logger.exception("File deletion failed", extra={"filename": file_name})
+        logger.exception(
+            "File deletion failed", extra={"file_name": file_name}
+        )
+
+
+async def _load_correlation_id(
+    redis_client: RedisClient, file_id: str
+) -> str | None:
+    """Читает request_id, сохранённый при HTTP-загрузке файла."""
+    raw = await redis_client.get(name=f"{CORR_KEY_PREFIX}{file_id}")
+    if not raw:
+        return None
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8")
+    return str(raw)
 
 
 async def listen_to_redis_events() -> None:
@@ -62,6 +81,8 @@ async def listen_to_redis_events() -> None:
                 if message["type"] == "pmessage":
                     channel = message["channel"].decode("utf-8")
                     key = message["data"].decode("utf-8")
+                    if key.startswith(CORR_KEY_PREFIX):
+                        continue
 
                     in_path = os.path.join(
                         settings.BASE_DIR, settings.UPLOAD_DIR, "in", key
@@ -72,23 +93,37 @@ async def listen_to_redis_events() -> None:
 
                     if channel == "__keyevent@0__:set":
                         value = await redis_client.get(name=key)
-                        if value and int(value.decode("utf-8")) == settings.LOAD:
-                            logger.info(
-                                "Conversion event received",
-                                extra={"token": key},
+                        if (
+                            value
+                            and int(value.decode("utf-8")) == settings.LOAD
+                        ):
+                            correlation_id = await _load_correlation_id(
+                                redis_client, key
                             )
-                            await convert_xlsx_to_xls(key)
-                            await redis_client.set(
-                                name=key,
-                                value=settings.CONVERTED,
-                                ex=settings.TTL,
-                            )
-                            await delete_file_async(in_path)
+                            with log_run("convert", request_id=correlation_id):
+                                logger.info(
+                                    "Conversion event received",
+                                    extra={"file_id": key},
+                                )
+                                converted = await convert_xlsx_to_xls(key)
+                                if not converted:
+                                    logger.warning(
+                                        "Conversion failed, "
+                                        "status left as LOAD",
+                                        extra={"file_id": key},
+                                    )
+                                    continue
+                                await redis_client.set(
+                                    name=key,
+                                    value=settings.CONVERTED,
+                                    ex=settings.TTL,
+                                )
+                                await delete_file_async(in_path)
 
                     elif channel == "__keyevent@0__:expired":
                         logger.debug(
                             "Converted file expired",
-                            extra={"token": key},
+                            extra={"file_id": key},
                         )
                         await delete_file_async(out_path)
             except redis_errors.ConnectionError as error:
@@ -219,23 +254,24 @@ async def delete_files_by_condition(
 
 async def clear_files() -> None:
     """Удаляет файлы, для которых больше нет ключей Redis."""
-    started_at = time.perf_counter()
-    logger.info("Scheduled file cleanup started")
-    redis: RedisClient = await get_redis()
-    in_dir = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "in")
-    out_dir = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "out")
+    with log_run("clear_files"):
+        started_at = time.perf_counter()
+        logger.info("Scheduled file cleanup started")
+        redis: RedisClient = await get_redis()
+        in_dir = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "in")
+        out_dir = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "out")
 
-    try:
-        await delete_files_by_condition(in_dir, lambda f: redis.exists(f))
-        await delete_files_by_condition(out_dir, lambda f: redis.exists(f))
-    except asyncio.CancelledError:
-        logger.info(
-            "Scheduled file cleanup cancelled",
-            extra={"duration_seconds": time.perf_counter() - started_at},
-        )
-        raise
-    else:
-        logger.info(
-            "Scheduled file cleanup completed",
-            extra={"duration_seconds": time.perf_counter() - started_at},
-        )
+        try:
+            await delete_files_by_condition(in_dir, lambda f: redis.exists(f))
+            await delete_files_by_condition(out_dir, lambda f: redis.exists(f))
+        except asyncio.CancelledError:
+            logger.info(
+                "Scheduled file cleanup cancelled",
+                extra={"duration_seconds": time.perf_counter() - started_at},
+            )
+            raise
+        else:
+            logger.info(
+                "Scheduled file cleanup completed",
+                extra={"duration_seconds": time.perf_counter() - started_at},
+            )

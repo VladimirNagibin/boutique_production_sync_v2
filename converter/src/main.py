@@ -1,19 +1,21 @@
 import asyncio
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
+import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import FastAPI
 from fastapi.responses import ORJSONResponse
 from redis.asyncio import Redis
-import uvicorn
 
 from api.v1.upload_files import upload_file_router
+from common.request_context_middleware import RequestContextMiddleware
 from core.logger import get_logger
 from core.settings import settings
 from db import redis_client
 from services.tasks import clear_files, listen_to_redis_events
+
 
 logger = get_logger(__name__)
 
@@ -163,6 +165,7 @@ app = FastAPI(
 )
 
 app.include_router(upload_file_router, prefix="/api/v1/files", tags=["files"])
+app.add_middleware(RequestContextMiddleware)
 
 
 if __name__ == "__main__":
@@ -172,9 +175,9 @@ if __name__ == "__main__":
     )
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
+        host="0.0.0.0",  # noqa: S104
         port=8000,
         log_config=None,
-        log_level=settings.LOG_LEVEL.lower(),
+        log_level=settings.APP_LOG_LEVEL.lower(),
         reload=False,
     )

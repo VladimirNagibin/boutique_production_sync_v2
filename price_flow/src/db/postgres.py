@@ -5,13 +5,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.exc import DatabaseError as SQLAlchemyDatabaseError
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
@@ -46,6 +47,48 @@ DEFAULT_POOL_SIZE = 20
 DEFAULT_MAX_OVERFLOW = 10
 ENGINE_COMMAND_TIMEOUT = 60  # seconds (for asyncpg)
 ENGINE_STATEMENT_TIMEOUT = "30000"  # milliseconds (PostgreSQL)
+SLOW_QUERY_THRESHOLD_MS = 1000.0
+SLOW_QUERY_STATEMENT_MAX_LEN = 500
+
+
+def _register_slow_query_logging(sync_engine: Engine) -> None:
+    """Пишет WARNING, если SQL выполняется дольше порога."""
+
+    @event.listens_for(sync_engine, "before_cursor_execute")
+    def _before_cursor_execute(
+        conn: Any,
+        _cursor: Any,
+        _statement: Any,
+        _parameters: Any,
+        _context: Any,
+        _executemany: Any,
+    ) -> None:
+        conn.info["query_start_perf"] = time.perf_counter()
+
+    @event.listens_for(sync_engine, "after_cursor_execute")
+    def _after_cursor_execute(
+        conn: Any,
+        _cursor: Any,
+        statement: Any,
+        _parameters: Any,
+        _context: Any,
+        _executemany: Any,
+    ) -> None:
+        started = conn.info.get("query_start_perf")
+        if started is None:
+            return
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        if elapsed_ms < SLOW_QUERY_THRESHOLD_MS:
+            return
+        statement_text = str(statement) if statement else ""
+        logger.warning(
+            "Slow database query",
+            extra={
+                "duration_ms": round(elapsed_ms, 2),
+                "threshold_ms": SLOW_QUERY_THRESHOLD_MS,
+                "statement": statement_text[:SLOW_QUERY_STATEMENT_MAX_LEN],
+            },
+        )
 
 
 # ===== Базовый класс моделей / Base Model =====
@@ -210,6 +253,8 @@ class DatabaseManager:
             max_overflow=self._config.max_overflow,
             connect_args=self._config.build_sync_connect_args(),
         )
+        _register_slow_query_logging(self._engine.sync_engine)
+        _register_slow_query_logging(self._sync_engine)
 
     async def _test_connection(self) -> None:
         """
@@ -390,10 +435,8 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     """
     session: AsyncSession = db_manager.session_factory()
     try:
-        logger.debug("Starting new DB session")
         yield session
         await session.commit()
-        logger.debug("DB session committed successfully")
     except OperationalError as e:
         await session.rollback()
         logger.error(
@@ -440,7 +483,6 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         ) from e
     finally:
         await session.close()
-        logger.debug("DB session closed")
 
 
 async def get_session_generator() -> AsyncGenerator[AsyncSession]:

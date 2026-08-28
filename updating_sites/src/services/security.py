@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from jose import JWTError, jwt  # type: ignore[import-untyped]
+from jose import JWTError, jwt
 
 from core.settings import settings
 
@@ -14,12 +14,14 @@ def create_access_token(
     to_encode = data.copy()
 
     if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
+        expire = datetime.now(UTC) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(
+        expire = datetime.now(UTC) + timedelta(
             minutes=settings.TOKEN_EXPIRE_MINUTES
         )
-    to_encode.update({"exp": expire, "type": "access", "jti": str(uuid.uuid4())})
+    to_encode.update(
+        {"exp": expire, "type": "access", "jti": str(uuid.uuid4())}
+    )
     encoded_jwt = jwt.encode(
         to_encode,
         settings.SECRET_KEY,
@@ -36,13 +38,15 @@ def create_refresh_token(
     to_encode = data.copy()
 
     if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
+        expire = datetime.now(UTC) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(
+        expire = datetime.now(UTC) + timedelta(
             days=settings.REFRESH_TOKEN_EXPIRE_DAYS
         )
 
-    to_encode.update({"exp": expire, "type": "refresh", "jti": str(uuid.uuid4())})
+    to_encode.update(
+        {"exp": expire, "type": "refresh", "jti": str(uuid.uuid4())}
+    )
 
     encoded_jwt = jwt.encode(
         to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM

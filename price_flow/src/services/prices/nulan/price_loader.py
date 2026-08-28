@@ -26,6 +26,7 @@ from common.exceptions.file import (
     FileUploadError,
     ZipExtractionError,
 )
+from common.log_context import bind_class, log_run
 from core.logger import get_logger
 from core.settings import settings
 from repositories.supplier_clothing_repo import (
@@ -92,40 +93,38 @@ class PriceLoader:
         """
         Основной метод запуска синхронизации файлов.
         """
-        # await self.supplier_clothing_repo.get_supplier_category_by_code(
-        #     self.supplier_id, 100029
-        # )
-        try:
-            logger.info(
-                "Starting supplier price synchronization",
-                extra={"supplier_id": self.supplier_id},
-            )
-            await self._fetch_and_process_directory(self.public_key)
-            await self._parse_files()
-            # price_as_is = self.temp_dir / "price_as_is.xlsx"
-            df = self.supplier_clothing_repo.save_price_as_is()
-        except Exception as e:
-            logger.error(
-                "Supplier price synchronization failed",
-                extra={
-                    "supplier_id": self.supplier_id,
-                    "error_type": type(e).__name__,
-                },
-                exc_info=True,
-            )
-            error_code = "PROCESS_PRICE_ERROR"
-            raise DownloadError(
-                error_code, f"Сбой синхронизации: {e!s}"
-            ) from e
-        else:
-            logger.info(
-                "Supplier price synchronization completed",
-                extra={
-                    "supplier_id": self.supplier_id,
-                    "result_row_count": len(df),
-                },
-            )
-            return df
+        with bind_class(self), log_run("process_price"):
+            try:
+                logger.info(
+                    "Starting supplier price synchronization",
+                    extra={"supplier_id": self.supplier_id},
+                )
+                await self._fetch_and_process_directory(self.public_key)
+                await self._parse_files()
+                # price_as_is = self.temp_dir / "price_as_is.xlsx"
+                df = self.supplier_clothing_repo.save_price_as_is()
+            except Exception as e:
+                logger.error(
+                    "Supplier price synchronization failed",
+                    extra={
+                        "supplier_id": self.supplier_id,
+                        "error_type": type(e).__name__,
+                    },
+                    exc_info=True,
+                )
+                error_code = "PROCESS_PRICE_ERROR"
+                raise DownloadError(
+                    error_code, f"Сбой синхронизации: {e!s}"
+                ) from e
+            else:
+                logger.info(
+                    "Supplier price synchronization completed",
+                    extra={
+                        "supplier_id": self.supplier_id,
+                        "result_row_count": len(df),
+                    },
+                )
+                return df
 
     async def _fetch_and_process_directory(self, public_url: str) -> None:
         """

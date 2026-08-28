@@ -1,7 +1,8 @@
 import logging
+import os
 
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, TypeVar
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -24,9 +25,106 @@ DEFAULT_LOGGING_BACKUP_COUNT = 5
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 SEQ_DEFAULT_URL = "http://localhost:5341"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SettingsT = TypeVar("_SettingsT", bound=BaseSettings)
+
+# Устаревшие имена переменных → контракт APP_* для common.logger
+_LOGGING_ENV_ALIASES: tuple[tuple[str, str], ...] = (
+    ("APP_LOG_LEVEL", "LOG_LEVEL"),
+    ("APP_BASE_DIR", "BASE_DIR"),
+    ("APP_LOGGING_FILE_MAX_BYTES", "LOGGING_FILE_MAX_BYTES"),
+    ("APP_LOGGING_BACKUP_COUNT", "LOGGING_BACKUP_COUNT"),
+    ("APP_LOG_TO_FILE", "LOG_TO_FILE"),
+)
 
 # Локальный логгер для этого модуля (без зависимости от глобальной настройки)
 _logger = logging.getLogger(__name__)
+
+
+def discover_env_file(*names: str) -> str | None:
+    """
+    Ищет файл окружения сервиса.
+
+    Порядок: переменная ENV_FILE, затем имена в cwd, родителе cwd
+    и корне репозитория (рядом с пакетом common).
+
+    Args:
+        names: Имена файлов, например ``.env.converter``.
+
+    Returns:
+        Абсолютный путь к первому найденному файлу или None.
+    """
+    explicit = os.getenv("ENV_FILE")
+    if explicit:
+        explicit_path = Path(explicit).expanduser()
+        if explicit_path.is_file() and os.access(explicit_path, os.R_OK):
+            return str(explicit_path)
+
+    candidates = names or (".env",)
+    search_dirs = (Path.cwd(), Path.cwd().parent, _REPO_ROOT)
+    seen: set[Path] = set()
+    for directory in search_dirs:
+        resolved = directory.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        for name in candidates:
+            path = resolved / name
+            if path.is_file() and os.access(path, os.R_OK):
+                return str(path)
+    return None
+
+
+def prepare_logging_environ(env_file: str | Path | None = None) -> None:
+    """
+    Подмешивает файл env в os.environ (без перезаписи) и алиасы логов.
+
+    Docker уже кладёт переменные в process env — файл внутри контейнера
+    обычно отсутствует, алиасы всё равно применяются.
+    """
+    path = Path(env_file).expanduser() if env_file else None
+    if path is not None and path.is_file() and os.access(path, os.R_OK):
+        try:
+            from dotenv import dotenv_values
+        except ImportError:
+            dotenv_values = None  # type: ignore[assignment]
+        if dotenv_values is not None:
+            try:
+                values = dotenv_values(str(path))
+            except OSError:
+                values = {}
+            for key, value in values.items():
+                if key and value is not None and key not in os.environ:
+                    os.environ[key] = value
+
+    for dest, src in _LOGGING_ENV_ALIASES:
+        if dest not in os.environ and src in os.environ:
+            os.environ[dest] = os.environ[src]
+
+
+def load_prefixed_settings(
+    settings_cls: type[_SettingsT],
+    env_file: str | Path | None = None,
+) -> _SettingsT:
+    """
+    Создаёт настройки с префиксом из process env и опционального файла.
+
+    Args:
+        settings_cls: AppSettings или SeqSettings.
+        env_file: Путь к ``.env.*`` сервиса.
+
+    Returns:
+        Экземпляр settings_cls.
+    """
+    prepare_logging_environ(env_file)
+    if env_file is not None:
+        path = Path(env_file).expanduser()
+        if path.is_file() and os.access(path, os.R_OK):
+            try:
+                return settings_cls(_env_file=str(path))
+            except OSError:
+                return settings_cls()
+    return settings_cls()
 
 
 # ===== Основной класс настроек приложения =====
@@ -61,7 +159,7 @@ class AppSettings(BaseSettings):
         description="Logging level",
     )
     base_dir: Path = Field(
-        default=Path(__file__).resolve().parent.parent.parent,
+        default=_REPO_ROOT,
         description="Base directory of the application",
     )
 
@@ -83,8 +181,9 @@ class AppSettings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="APP_",
-        env_file=".env",
+        env_file=None,
         env_file_encoding="utf-8",
+        env_ignore_empty=True,
         extra="ignore",
         case_sensitive=False,
     )
@@ -196,8 +295,9 @@ class SeqSettings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="SEQ_",
-        env_file=".env",
+        env_file=None,
         env_file_encoding="utf-8",
+        env_ignore_empty=True,
         extra="ignore",
         case_sensitive=False,
     )
@@ -282,7 +382,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=None,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -361,21 +461,8 @@ class Settings(BaseSettings):
         if self.app.reload:
             errors.append("APP_RELOAD must be False in production")
         if self.app.log_level == "DEBUG":
-            errors.append("LOG_LEVEL must not be DEBUG in production")
+            errors.append("APP_LOG_LEVEL must not be DEBUG in production")
         return errors
-
-    # def _validate_auth_production(self) -> list[str]:
-    #     """Проверяет настройки аутентификации в production."""
-    #     errors: list[str] = []
-    #     if (
-    #         not self.auth.secret_key
-    #         or len(self.auth.secret_key) < SECRET_KEY_MIN_LENGTH
-    #     ):
-    #         errors.append(
-    #             "AUTH_SECRET_KEY is missing or too short "
-    #             f"(min {SECRET_KEY_MIN_LENGTH} chars)"
-    #         )
-    #     return errors
 
     def _validate_encryption_production(self) -> list[str]:
         """Проверяет настройки шифрования в production."""
@@ -406,6 +493,9 @@ class Settings(BaseSettings):
 
 
 # ===== Создание глобального экземпляра =====
+_settings_instance: Settings | None = None
+
+
 def _load_settings() -> Settings:
     """
     Загружает настройки приложения.
@@ -426,5 +516,11 @@ def _load_settings() -> Settings:
         return instance
 
 
-# Глобальный экземпляр настроек с явной аннотацией типа
-settings: Final[Settings] = _load_settings()
+def __getattr__(name: str) -> Any:
+    """Ленивая загрузка settings: логгер не должен поднимать полный Settings."""
+    global _settings_instance
+    if name == "settings":
+        if _settings_instance is None:
+            _settings_instance = _load_settings()
+        return _settings_instance
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

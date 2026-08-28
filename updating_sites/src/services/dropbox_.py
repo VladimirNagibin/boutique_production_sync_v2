@@ -9,6 +9,7 @@ import requests
 from dropbox import DropboxOAuth2FlowNoRedirect
 from fastapi import Depends
 
+from common.log_context import bind_class, log_run
 from core.logger import get_logger
 from core.settings import settings
 from services.storage import State, get_storage
@@ -32,6 +33,10 @@ class DropboxService:
         Авторизация в Dropbox через OAuth2 (получение access/refresh токенов).
         Требует ручного ввода кода подтверждения.
         """
+        with bind_class(self):
+            self._authorize()
+
+    def _authorize(self) -> None:
         auth_flow = DropboxOAuth2FlowNoRedirect(
             settings.dropbox_app_key,
             settings.dropbox_app_secret,
@@ -202,47 +207,48 @@ class DropboxService:
             Список словарей с информацией о каждой операции (успех/ошибка).
         """
         result: list[dict[str, Any]] = []
-        logger.info(
-            "Dropbox portal synchronization started",
-            extra={"portal_count": len(settings.portals_dropbox)},
-        )
+        with bind_class(self), log_run("dropbox_sync"):
+            logger.info(
+                "Dropbox portal synchronization started",
+                extra={"portal_count": len(settings.portals_dropbox)},
+            )
 
-        # 1. Проверяем/обновляем токен
-        if not self.check_auth_token():
-            status = self.get_auth_token_by_refresh()
-            if status != HTTPStatus.OK:
-                logger.error("Cannot refresh token, aborting upload")
-                return result
-
+            # 1. Проверяем/обновляем токен
             if not self.check_auth_token():
-                logger.error("Token still invalid after refresh")
+                status = self.get_auth_token_by_refresh()
+                if status != HTTPStatus.OK:
+                    logger.error("Cannot refresh token, aborting upload")
+                    return result
+
+                if not self.check_auth_token():
+                    logger.error("Token still invalid after refresh")
+                    return result
+
+            access_token = self._get_token("access_token")
+            if not access_token:
+                logger.error("Access token is missing")
                 return result
 
-        access_token = self._get_token("access_token")
-        if not access_token:
-            logger.error("Access token is missing")
+            # 2. Основной цикл по порталам
+            with dropbox.Dropbox(oauth2_access_token=access_token) as dbx:
+                for portal, dropbox_base_path in settings.portals_dropbox:
+                    for ind in range(1, 4):
+                        entry = self._process_portal_file(
+                            dbx, portal, ind, dropbox_base_path
+                        )
+                        if entry:
+                            result.append(entry)
+
+            logger.info(
+                "Dropbox update completed",
+                extra={
+                    "processed": len(result),
+                    "error_count": sum(
+                        1 for entry in result if entry.get("error")
+                    ),
+                },
+            )
             return result
-
-        # 2. Основной цикл по порталам
-        with dropbox.Dropbox(oauth2_access_token=access_token) as dbx:
-            for portal, dropbox_base_path in settings.portals_dropbox:
-                for ind in range(1, 4):
-                    entry = self._process_portal_file(
-                        dbx, portal, ind, dropbox_base_path
-                    )
-                    if entry:
-                        result.append(entry)
-
-        logger.info(
-            "Dropbox update completed",
-            extra={
-                "processed": len(result),
-                "error_count": sum(
-                    1 for entry in result if entry.get("error")
-                ),
-            },
-        )
-        return result
 
     # ----- Приватные методы -----
 

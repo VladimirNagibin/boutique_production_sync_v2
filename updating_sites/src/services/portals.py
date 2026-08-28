@@ -4,15 +4,16 @@ from collections.abc import Iterator, Sequence
 from typing import Any
 
 import pandas as pd
-from sshtunnel import SSHTunnelForwarder  # type: ignore[import-not-found]
-from sqlalchemy import Row, create_engine, text, Table, MetaData
+from sqlalchemy import MetaData, Row, Table, create_engine, text
 from sqlalchemy.engine.base import Engine
+from sshtunnel import SSHTunnelForwarder
 
+from common.log_context import bind_class, log_run
 from core.logger import get_logger
 from core.settings import settings
 from services.helper import (
-    get_request_for_upd,
     get_files_tables,
+    get_request_for_upd,
     get_tables_for_export,
     get_tables_for_overload,
 )
@@ -25,7 +26,8 @@ class PortalServices:
     def __init__(self, server: SSHTunnelForwarder, portal: str) -> None:
         self.portal = portal
         self.engine = create_engine(
-            settings.portals_settings[portal].mysql_db % (server.local_bind_port)
+            settings.portals_settings[portal].mysql_db
+            % (server.local_bind_port)
         )
 
     def update_table(self, file: str, table: str) -> tuple[Any, str]:
@@ -119,9 +121,11 @@ class EtlServices:
             settings.sender.mysql_db % (server_sender.local_bind_port)
         )
 
-    def get_data(self, engine: Engine, table: str) -> Iterator[Sequence[Row[Any]]]:
+    def get_data(
+        self, engine: Engine, table: str
+    ) -> Iterator[Sequence[Row[Any]]]:
         with engine.connect() as connection:
-            source_data = connection.execute(text(f"SELECT * FROM {table};"))
+            source_data = connection.execute(text(f"SELECT * FROM {table};"))  # noqa: S608
             while results := source_data.fetchmany(10000):
                 yield results
 
@@ -196,7 +200,7 @@ class ExportService:
                 "database": database,
             },
         )
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S602
             f"mysqldump -h %s -P %s -u %s -p%s %s {tables} > %s.sql"
             % (host, port, db_user, db_pass, database, file),
             shell=True,
@@ -246,68 +250,74 @@ class ExportService:
 class UpdatingPortalServis:
     def update_portal(self, portal: str) -> dict[str, Any]:
         result: dict[str, Any] = {}
-        logger.info("Portal update started", extra={"portal": portal})
-        with SSHTunnelForwarder(
-            ssh_address_or_host=settings.host,
-            ssh_username=settings.login,
-            ssh_password=settings.password,
-            remote_bind_address=(
-                settings.ssh_tunnel_local_host,
-                settings.ssh_tunnel_local_port,
-            ),
-        ) as server:
-            if server:
-                server.start()
-                portal_services = PortalServices(server, portal)
-                update_tables, result_tables = portal_services.update_tables()
-                result["update_tables"] = update_tables
-                result["update_tables_result"] = result_tables
-                if result_tables:
-                    try:
-                        portal_services.update_portal()
-                        result["update_portal"] = "success"
-                    except Exception as e:
-                        result["update_portal"] = str(e)
-                else:
-                    result["update_portal"] = "not started"
-        logger.info(
-            "Portal update completed",
-            extra={
-                "portal": portal,
-                "tables_updated": result.get("update_tables_result", False),
-                "portal_status": result.get("update_portal"),
-            },
-        )
-        return result
+        with bind_class(self), log_run("portal_update"):
+            logger.info("Portal update started", extra={"portal": portal})
+            with SSHTunnelForwarder(
+                ssh_address_or_host=settings.host,
+                ssh_username=settings.login,
+                ssh_password=settings.password,
+                remote_bind_address=(
+                    settings.ssh_tunnel_local_host,
+                    settings.ssh_tunnel_local_port,
+                ),
+            ) as server:
+                if server:
+                    server.start()
+                    portal_services = PortalServices(server, portal)
+                    update_tables, result_tables = (
+                        portal_services.update_tables()
+                    )
+                    result["update_tables"] = update_tables
+                    result["update_tables_result"] = result_tables
+                    if result_tables:
+                        try:
+                            portal_services.update_portal()
+                            result["update_portal"] = "success"
+                        except Exception as e:  # noqa: BLE001
+                            result["update_portal"] = str(e)
+                    else:
+                        result["update_portal"] = "not started"
+            logger.info(
+                "Portal update completed",
+                extra={
+                    "portal": portal,
+                    "tables_updated": result.get(
+                        "update_tables_result", False
+                    ),
+                    "portal_status": result.get("update_portal"),
+                },
+            )
+            return result
 
     def etl(self, page: int | None) -> dict[str, Any]:  # type: ignore[return]
-        logger.info("ETL synchronization started", extra={"page": page})
-        with (
-            SSHTunnelForwarder(
-                ssh_address_or_host=settings.recipient.host,
-                ssh_username=settings.recipient.login,
-                ssh_password=settings.recipient.password,
-                remote_bind_address=(
-                    settings.ssh_tunnel_local_host,
-                    settings.ssh_tunnel_local_port,
-                ),
-            ) as server_recipient,
-            SSHTunnelForwarder(
-                ssh_address_or_host=settings.sender.host,
-                ssh_username=settings.sender.login,
-                ssh_password=settings.sender.password,
-                remote_bind_address=(
-                    settings.ssh_tunnel_local_host,
-                    settings.ssh_tunnel_local_port,
-                ),
-            ) as server_sender,
-        ):
-            if server_recipient and server_sender:
-                server_recipient.start()
-                server_sender.start()
+        with bind_class(self), log_run("portal_etl"):
+            logger.info("ETL synchronization started", extra={"page": page})
+            with (
+                SSHTunnelForwarder(
+                    ssh_address_or_host=settings.recipient.host,
+                    ssh_username=settings.recipient.login,
+                    ssh_password=settings.recipient.password,
+                    remote_bind_address=(
+                        settings.ssh_tunnel_local_host,
+                        settings.ssh_tunnel_local_port,
+                    ),
+                ) as server_recipient,
+                SSHTunnelForwarder(
+                    ssh_address_or_host=settings.sender.host,
+                    ssh_username=settings.sender.login,
+                    ssh_password=settings.sender.password,
+                    remote_bind_address=(
+                        settings.ssh_tunnel_local_host,
+                        settings.ssh_tunnel_local_port,
+                    ),
+                ) as server_sender,
+            ):
+                if server_recipient and server_sender:
+                    server_recipient.start()
+                    server_sender.start()
 
-                etl_services = EtlServices(server_sender, server_recipient)
-                return etl_services.overload_tables(page)
+                    etl_services = EtlServices(server_sender, server_recipient)
+                    return etl_services.overload_tables(page)
 
     def export_table_part(
         self, export_services: ExportService, part: int
@@ -321,7 +331,7 @@ class UpdatingPortalServis:
                 try:
                     zip_file = export_services.zip_file(file)
                     result["file"] = zip_file
-                except Exception:
+                except Exception:  # noqa: BLE001
                     result["file"] = file
                     logger.warning(
                         "Export archive unavailable; SQL file retained",
@@ -348,30 +358,33 @@ class UpdatingPortalServis:
 
     def export_table(self, portal: str) -> list[Any]:
         result: list[Any] = []
-        logger.info("Portal export started", extra={"portal": portal})
-        with SSHTunnelForwarder(
-            ssh_address_or_host=settings.host,
-            ssh_username=settings.login,
-            ssh_password=settings.password,
-            remote_bind_address=(
-                settings.ssh_tunnel_local_host,
-                settings.ssh_tunnel_local_port,
-            ),
-        ) as server:
-            if server:
-                server.start()
-                export_services = ExportService(server, portal)
-                result.append(self.export_table_part(export_services, 1))
-                result.append(self.export_table_part(export_services, 2))
-        logger.info(
-            "Portal export completed",
-            extra={
-                "portal": portal,
-                "part_count": len(result),
-                "error_count": sum(1 for item in result if item.get("error")),
-            },
-        )
-        return result
+        with bind_class(self), log_run("portal_export"):
+            logger.info("Portal export started", extra={"portal": portal})
+            with SSHTunnelForwarder(
+                ssh_address_or_host=settings.host,
+                ssh_username=settings.login,
+                ssh_password=settings.password,
+                remote_bind_address=(
+                    settings.ssh_tunnel_local_host,
+                    settings.ssh_tunnel_local_port,
+                ),
+            ) as server:
+                if server:
+                    server.start()
+                    export_services = ExportService(server, portal)
+                    result.append(self.export_table_part(export_services, 1))
+                    result.append(self.export_table_part(export_services, 2))
+            logger.info(
+                "Portal export completed",
+                extra={
+                    "portal": portal,
+                    "part_count": len(result),
+                    "error_count": sum(
+                        1 for item in result if item.get("error")
+                    ),
+                },
+            )
+            return result
 
 
 def get_portal_service() -> UpdatingPortalServis:
