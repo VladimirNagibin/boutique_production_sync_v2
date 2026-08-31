@@ -31,20 +31,23 @@ COPY --from=prod-deps --chown=appuser:appuser /workspace/converter/.venv /app/.v
 COPY --chown=appuser:appuser converter/src/ ./src/
 COPY --chown=appuser:appuser common/ ./src/common/
 
+COPY converter/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
 # Переменные окружения
 ENV PYTHONPATH="/app/src:/app/src/common" \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
-# Данные и логи
+# Каталоги данных (права выставит entrypoint при старте, в т.ч. на volume)
 RUN mkdir -p /app/src/data/upload/in /app/src/data/upload/out /app/src/logs \
     && chown -R appuser:appuser /app
 
-USER appuser
+# Запуск от root: entrypoint chown volume и переключится на appuser
+ENTRYPOINT ["/docker-entrypoint.sh"]
+CMD ["python", "/app/src/main.py"]
 
 EXPOSE 8000
-
-CMD ["python", "/app/src/main.py"]
 
 # ---- Образ для разработки (с dev-зависимостями) ----
 FROM python:3.11-slim-bookworm AS development
@@ -60,6 +63,8 @@ COPY --from=dev-deps /workspace/converter/.venv /app/.venv
 
 COPY converter/src/ ./src/
 COPY common/ ./src/common/
+COPY converter/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 ENV PYTHONPATH="/app/src:/app/src/common" \
     PYTHONUNBUFFERED=1 \
@@ -69,4 +74,5 @@ RUN mkdir -p /app/src/data/upload/in /app/src/data/upload/out /app/src/logs
 
 EXPOSE 8000
 
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["python", "/app/src/main.py"]

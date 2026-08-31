@@ -1,13 +1,21 @@
-import os
+import asyncio
 from http import HTTPStatus
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile  # , Response
-from fastapi.responses import Response, JSONResponse, FileResponse
+from fastapi import (  # , Response
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    UploadFile,
+)
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from api.v1.deps import verify_api_key
 from core.logger import get_logger
 from core.settings import settings
 from services.helper import decode_val
+
 
 logger = get_logger(__name__)
 upload_file_router = APIRouter(dependencies=[Depends(verify_api_key)])
@@ -26,7 +34,9 @@ def upload_file(
         filename = filename if filename else file.filename
         if filename:
             decoded_filename = decode_val(filename)
-            destination = f"data/{path}/{decoded_filename}"
+            destination = (
+                Path(settings.base_dir) / "data" / path / decoded_filename
+            )
             logger.info(
                 "File upload started",
                 extra={
@@ -35,13 +45,13 @@ def upload_file(
                     "file_size": len(contents),
                 },
             )
-            with open(destination, "wb") as f:
-                f.write(contents)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(contents)
             logger.info(
                 "File upload completed",
                 extra={
                     "path": path,
-                    "filename": decoded_filename,
+                    "file_name": decoded_filename,
                     "bytes_written": len(contents),
                 },
             )
@@ -53,14 +63,13 @@ def upload_file(
     except HTTPException:
         raise
     except Exception as error:
-        logger.error(
+        logger.exception(
             "File upload failed",
             extra={
                 "path": path,
-                "filename": filename or file.filename,
-                "error": str(error),
+                "file_name": filename or file.filename,
+                "error_type": type(error).__name__,
             },
-            exc_info=True,
         )
         raise HTTPException(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -78,11 +87,14 @@ def upload_file(
     response_model=None,
 )
 async def export_file(response: Response, file: str) -> Response:
-    if not os.path.exists(os.path.join(settings.base_dir, file)):
+    file_path = Path(settings.base_dir) / file
+    exists = await asyncio.to_thread(file_path.exists)
+    if not exists:
         logger.warning("Export file not found", extra={"file": file})
         # response.status_code = HTTPStatus.BAD_REQUEST
         return JSONResponse(
-            status_code=HTTPStatus.BAD_REQUEST, content={"error": "File not found"}
+            status_code=HTTPStatus.BAD_REQUEST,
+            content={"error": "File not found"},
         )
     logger.info("Export file served", extra={"file": file})
-    return FileResponse(file, filename=file.rsplit("/")[-1])
+    return FileResponse(file_path, filename=file_path.name)

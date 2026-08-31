@@ -3,7 +3,6 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import ORJSONResponse
 
 from api.v1.auth import auth_router
 from api.v1.dropbox import dropbox_router
@@ -52,7 +51,6 @@ app = FastAPI(
     title=settings.PROJECT_NAME,
     docs_url="/api/openapi",
     openapi_url="/api/openapi.json",
-    default_response_class=ORJSONResponse,
     lifespan=lifespan,
 )
 

@@ -20,16 +20,13 @@ logger = get_logger(__name__)
 
 CLOTHING_CODES_SERVICE_DEPENDENCY = cast("ClothingCodesService", ...)
 
-closing_codes_router = APIRouter()  # dependencies=[Depends(verify_api_key)])
+closing_codes_router = APIRouter()
 
 
 @closing_codes_router.get("/export")
 async def export_clothing_codes(
     supplier_id: int | None = Query(None, description="Фильтр по поставщику"),
     packing_format: str = Query("zip", pattern="^(zip|gzip|csv|json)$"),
-    # clothing_codes_service: ClothingCodesService = Depends(
-    #     get_clothing_codes_service
-    # ),
     clothing_codes_service: Annotated[
         ClothingCodesService, Depends(get_clothing_codes_service)
     ] = CLOTHING_CODES_SERVICE_DEPENDENCY,
@@ -63,16 +60,10 @@ async def import_clothing_codes(
         UploadFile,
         File(..., description="ZIP/GZIP/CSV/JSON файл с данными"),
     ],
-    # file: UploadFile = File(
-    #     ..., description="ZIP/GZIP/CSV/JSON файл с данными"
-    # ),
     clothing_codes_service: Annotated[
         ClothingCodesService,
         Depends(get_clothing_codes_service),
     ],
-    # clothing_codes_service: ClothingCodesService = Depends(
-    #     get_clothing_codes_service
-    # ),
     strategy: str = Query(
         "upsert",
         pattern="^(upsert|skip|replace_supplier|replace_all|validate_only)$",

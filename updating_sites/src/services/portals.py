@@ -17,6 +17,7 @@ from services.helper import (
     get_tables_for_export,
     get_tables_for_overload,
 )
+from services.local_paths import resolve_local_path
 
 
 logger = get_logger(__name__)
@@ -33,13 +34,16 @@ class PortalServices:
     def update_table(self, file: str, table: str) -> tuple[Any, str]:
         try:
             df = pd.read_csv(file, sep=";")
-            result = df.to_sql(
-                table,
-                con=self.engine,
-                if_exists="replace",
-                index=False,
-                chunksize=10000,
-            )
+            # pandas 3 требует SQLAlchemy>=2.0.36, иначе идёт в sqlite-путь
+            # и вызывает .cursor() у Engine/Connection.
+            with self.engine.begin() as connection:
+                result = df.to_sql(
+                    table,
+                    con=connection,
+                    if_exists="replace",
+                    index=False,
+                    chunksize=10000,
+                )
         except Exception as error:
             logger.error(
                 "CSV import to table failed",
@@ -69,7 +73,8 @@ class PortalServices:
         file_table = get_files_tables(self.portal)
         if file_table:
             for file, table in file_table:
-                rows, err = self.update_table(file, table)
+                csv_path = str(resolve_local_path(file))
+                rows, err = self.update_table(csv_path, table)
                 res: dict[str, str] = {"table": table, "rows": rows}
                 if err:
                     res["error"] = err
@@ -190,7 +195,7 @@ class ExportService:
         db_pass = settings.portals_settings[self.portal].password_db
         database = settings.portals_settings[self.portal].name_db
         # filestamp = time.strftime('%Y-%m-%d-%I')
-        file = f"data/upload/{database}_{part}"
+        file = str(resolve_local_path(f"data/upload/{database}_{part}"))
         tables = " ".join(get_tables_for_export(part))
         logger.info(
             "Database export started",

@@ -29,13 +29,21 @@ from common.exceptions.file import (
 from common.log_context import bind_class, log_run
 from core.logger import get_logger
 from core.settings import settings
-from repositories.supplier_clothing_repo import (
-    SupplierClothingRepo,
-    get_supplier_codes_repo,
+from repositories.supplier_clothing_codes_repo import (
+    SupplierClothingCodeRepository,
+    get_supplier_clothing_codes_repo,
+)
+from repositories.supplier_price_repo import (
+    SupplierPriceRepository,
+    get_supplier_price_repo,
+)
+from repositories.supplier_product_codes_repo import (
+    SupplierProductCodeRepository,
+    get_supplier_product_codes_repo,
 )
 from schemas.converter_schemas import UploadResult
 from schemas.response_schemas import SuccessResponse
-from schemas.supplier_schemas import SupplierProductPrice
+from schemas.supplier_schemas import SupplierProduct, SupplierProductPrice
 from services.converter import FileUploader as Converter
 from services.converter import get_file_uploader as get_converter
 from services.file_uploader import FileUploader, get_file_uploader
@@ -69,18 +77,22 @@ class PriceLoader:
 
     def __init__(
         self,
-        supplier_clothing_repo: SupplierClothingRepo,
+        clothing_codes_repo: SupplierClothingCodeRepository,
+        price_repo: SupplierPriceRepository,
+        product_codes_repo: SupplierProductCodeRepository,
         file_uploader: FileUploader,
         converter: Converter,
         base_dir: Path | None = None,
         supplier_id: int = DEFAULT_SUPPLIER_ID,
     ) -> None:
-        self.supplier_clothing_repo = supplier_clothing_repo
+        self.clothing_codes_repo = clothing_codes_repo
+        self.price_repo = price_repo
+        self.product_codes_repo = product_codes_repo
         self.file_uploader = file_uploader
         self.converter = converter
         self.base_dir = base_dir or settings.app.base_dir
         self.api_url = settings.price.nulan_api_url
-        self.public_key = settings.price.nulan_price_url
+        self.public_key = settings.price.nulan_prices_url
         self.supplier_id = supplier_id
 
         # Определяем папку для временных файлов
@@ -101,8 +113,7 @@ class PriceLoader:
                 )
                 await self._fetch_and_process_directory(self.public_key)
                 await self._parse_files()
-                # price_as_is = self.temp_dir / "price_as_is.xlsx"
-                df = self.supplier_clothing_repo.save_price_as_is()
+                df = await self.price_repo.fetch_all()
             except Exception as e:
                 logger.error(
                     "Supplier price synchronization failed",
@@ -313,32 +324,49 @@ class PriceLoader:
         )
 
     async def _parse_files(self) -> None:
-        code_max = await self.supplier_clothing_repo.get_max_code_async(
+        clothing_by_name = await self.clothing_codes_repo.get_lookup_by_name(
+            self.supplier_id
+        )
+        categories_by_code = await self.product_codes_repo.get_category_map(
+            self.supplier_id
+        )
+        code_max = await self.clothing_codes_repo.get_max_code(
             self.supplier_id
         )
         current_code = code_max + 1
-        await self.supplier_clothing_repo.clear_supplier_price(
-            self.supplier_id
-        )
+        await self.price_repo.delete_by_supplier(self.supplier_id)
         logger.info(
             "Starting supplier price file processing",
             extra={
                 "supplier_id": self.supplier_id,
                 "file_count": len(FILENAME_MAPPING),
+                "clothing_lookup_count": len(clothing_by_name),
+                "product_category_count": len(categories_by_code),
             },
         )
         for _, file in FILENAME_MAPPING.items():
-            await self._parse_file(self.temp_dir / file, current_code)
-            # break
+            current_code = await self._parse_file(
+                self.temp_dir / file,
+                current_code,
+                clothing_by_name,
+                categories_by_code,
+            )
         logger.info(
             "Supplier price file processing completed",
             extra={
                 "supplier_id": self.supplier_id,
                 "file_count": len(FILENAME_MAPPING),
+                "next_code": current_code,
             },
         )
 
-    async def _parse_file(self, file: str | Path, current_code: int) -> None:
+    async def _parse_file(
+        self,
+        file: str | Path,
+        current_code: int,
+        clothing_by_name: dict[str, SupplierProduct],
+        categories_by_code: dict[int, SupplierProduct],
+    ) -> int:
         file_path = Path(file)
         logger.info(
             "Processing supplier price file",
@@ -347,8 +375,9 @@ class PriceLoader:
                 "file_name": file_path.name,
             },
         )
-        repo = self.supplier_clothing_repo
-        inf = pd.read_excel(file, skiprows=PRODUCT_SKIP_HEAD_ROWS)
+        inf = await asyncio.to_thread(
+            pd.read_excel, file, skiprows=PRODUCT_SKIP_HEAD_ROWS
+        )
         sizes: list[str] = []
         product_name = ""
         product_price = 0
@@ -371,28 +400,19 @@ class PriceLoader:
                     for i, size in enumerate(sizes):
                         remains = s[i + PRODUCT_START_REMAINS_COLUMN]
                         if isinstance(remains, str):
-                            supplier_product = await repo.get_supplier_product(
-                                self.supplier_id,
+                            (
+                                code,
+                                brand,
+                                subgroup,
+                                current_code,
+                            ) = self._resolve_product(
                                 product_name,
                                 size,
                                 product_color,
+                                clothing_by_name,
+                                categories_by_code,
+                                current_code,
                             )
-                            if supplier_product:
-                                code = supplier_product.code
-                                brand = supplier_product.category
-                                subgroup = supplier_product.subcategory
-                                brands = (
-                                    await repo.get_supplier_category_by_code(
-                                        self.supplier_id, code
-                                    )
-                                )
-                                if brands:
-                                    brand = brands.category
-                                    subgroup = brands.subcategory
-                            else:
-                                code, brand, subgroup = current_code, "?", "?"
-                                current_code += 1
-
                             supplier_product_price = SupplierProductPrice(
                                 code=code,
                                 name=f"{product_name} {size} {product_color}",
@@ -406,7 +426,7 @@ class PriceLoader:
                             )
                             price_supplier.append(supplier_product_price)
 
-        await repo.add_supplier_price(price_supplier)
+        await self.price_repo.insert_batch(price_supplier)
         logger.info(
             "Supplier price file processed",
             extra={
@@ -415,7 +435,40 @@ class PriceLoader:
                 "price_record_count": len(price_supplier),
             },
         )
-        # return current_code
+        return current_code
+
+    def _resolve_product(
+        self,
+        product_name: str,
+        size: str,
+        color: str,
+        clothing_by_name: dict[str, SupplierProduct],
+        categories_by_code: dict[int, SupplierProduct],
+        current_code: int,
+    ) -> tuple[int, str, str, int]:
+        """
+        Сопоставляет позицию прайса со справочником кодов.
+
+        Returns:
+            code, category, subcategory, следующий свободный code.
+        """
+        search_name = f"{product_name} {size} {color}".strip()
+        supplier_product = clothing_by_name.get(search_name)
+        if supplier_product:
+            code = supplier_product.code
+            brand = supplier_product.category
+            subgroup = supplier_product.subcategory
+            brands = categories_by_code.get(code)
+            if brands:
+                brand = brands.category
+                subgroup = brands.subcategory
+            return code, brand, subgroup, current_code
+
+        assigned = SupplierProduct(
+            code=current_code, category="?", subcategory="?"
+        )
+        clothing_by_name[search_name] = assigned
+        return current_code, "?", "?", current_code + 1
 
     async def load_products(self, file: UploadFile) -> UploadResult:
         """
@@ -465,7 +518,7 @@ class PriceLoader:
 
             # 6
             price_filename = self.temp_dir / Path("price.xlsx")
-            self.save_price_for_load(price_filename)
+            await self.save_price_for_load(price_filename)
 
             # 7. Конвертация
             logger.info(
@@ -570,12 +623,72 @@ class PriceLoader:
             raise DataProcessingError(ErrorMessages.ERR_MSG_CSV_NOT_FOUND)
 
     async def load_file_to_db(self, unpacked_file_path: str) -> None:
-        await self.supplier_clothing_repo.load_data(
-            unpacked_file_path, "supplier_price"
-        )
+        df = await asyncio.to_thread(self._load_excel_data, unpacked_file_path)
+        category_rows = self._prepare_category_updates(df)
+        await self.price_repo.update_categories(category_rows)
+        await self.clothing_codes_repo.insert_missing_from_price()
 
-    def save_price_for_load(self, file_name: str | Path) -> None:
-        data_frame = self.supplier_clothing_repo.save_price_for_load()
+    def _load_excel_data(self, excel_path: str | Path) -> DataFrame:
+        """Читает xlsx с кодами и категориями для обновления прайса."""
+        df = pd.read_excel(
+            excel_path,
+            dtype={
+                "id": "int64",
+                "code": "int64",
+                "name": "str",
+                "category": "str",
+                "subcategory": "str",
+                "supplier_id": "int64",
+                "product_summary": "str",
+                "size": "str",
+                "color": "str",
+                "price": "float64",
+            },
+        )
+        required_columns = [
+            "code",
+            "category",
+            "subcategory",
+            "supplier_id",
+        ]
+        missing_columns = [
+            col for col in required_columns if col not in df.columns
+        ]
+        if missing_columns:
+            self._raise_missing_columns(missing_columns)
+        return df
+
+    @staticmethod
+    def _raise_missing_columns(missing_columns: list[str]) -> None:
+        """Бросает ошибку при отсутствии колонок в xlsx."""
+        error_message = f"Отсутствуют обязательные колонки: {missing_columns}"
+        raise ValueError(error_message)
+
+    @staticmethod
+    def _prepare_category_updates(df: DataFrame) -> list[dict[str, Any]]:
+        """Готовит параметры массового UPDATE категорий."""
+        rows: list[dict[str, Any]] = []
+        for _, row in df.iterrows():
+            rows.append(
+                {
+                    "p_category": (
+                        str(row["category"])
+                        if pd.notna(row["category"])
+                        else None
+                    ),
+                    "p_subcategory": (
+                        str(row["subcategory"])
+                        if pd.notna(row["subcategory"])
+                        else None
+                    ),
+                    "p_code": int(row["code"]),
+                    "p_supplier_id": int(row["supplier_id"]),
+                }
+            )
+        return rows
+
+    async def save_price_for_load(self, file_name: str | Path) -> None:
+        data_frame = await self.price_repo.fetch_ordered()
         excel_file_path = file_name
         brand = ""
         subgroup = ""
@@ -595,10 +708,17 @@ class PriceLoader:
                 price_all.append(["", subgroup, ""])
             price_all.append([code, name, price])
         df = pd.DataFrame(price_all, columns=["code", "name", "price"])
-        df.to_excel(excel_file_path, index=False)
+        await asyncio.to_thread(df.to_excel, excel_file_path, index=False)
 
     async def upd_table(self) -> None:
-        await self.supplier_clothing_repo.fix_supplier_id_type()
+        """
+        Совместимость со старым API:
+        тип supplier_id в Postgres не требует исправления.
+        """
+        logger.info(
+            "Skipping sqlite supplier_id type fix",
+            extra={"supplier_id": self.supplier_id},
+        )
 
 
 async def remove_file_async(file_path: str | Path) -> bool:
@@ -657,30 +777,27 @@ async def remove_directory_async(dir_path: str | Path) -> bool:
 
 # Dependency для FastAPI
 def get_price_loader(
-    # settings: Annotated[Any, Depends(lambda: settings)],
-    supplier_clothing_repo: Annotated[
-        SupplierClothingRepo, Depends(get_supplier_codes_repo)
+    clothing_codes_repo: Annotated[
+        SupplierClothingCodeRepository,
+        Depends(get_supplier_clothing_codes_repo),
+    ],
+    price_repo: Annotated[
+        SupplierPriceRepository, Depends(get_supplier_price_repo)
+    ],
+    product_codes_repo: Annotated[
+        SupplierProductCodeRepository,
+        Depends(get_supplier_product_codes_repo),
     ],
     file_uploader: Annotated[FileUploader, Depends(get_file_uploader)],
     converter: Annotated[Converter, Depends(get_converter)],
-    # file_uploader: Annotated[FileUploader, Depends(get_file_uploader)],
-    # supplier_id: int = PriceLoader.DEFAULT_SUPPLIER_ID,
 ) -> PriceLoader:
     """
     Dependency для получения экземпляра PriceLoader.
-
-    Args:
-        settings: Настройки приложения
-        supplier_codes_repo: Репозиторий данных поставщика
-        supplier_id: ID поставщика
-
-    Returns:
-        PriceLoader: Экземпляр сервиса
     """
     return PriceLoader(
-        # settings=settings,
-        supplier_clothing_repo=supplier_clothing_repo,
+        clothing_codes_repo=clothing_codes_repo,
+        price_repo=price_repo,
+        product_codes_repo=product_codes_repo,
         file_uploader=file_uploader,
         converter=converter,
-        # supplier_id=supplier_id,
     )
