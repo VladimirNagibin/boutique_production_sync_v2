@@ -19,6 +19,10 @@ from services.prices.nulan.price_loader import PriceLoader as PriceLoaderNulan
 from services.prices.nulan.price_loader import (
     get_price_loader as get_price_loader_nulan,
 )
+from services.prices.opt.price_loader import PriceLoader as PriceLoaderOpt
+from services.prices.opt.price_loader import (
+    get_price_loader as get_price_loader_opt,
+)
 
 
 logger = get_logger(__name__)
@@ -45,6 +49,26 @@ async def load_price_lanset(
         data=upload_result.model_dump(),
         details=details,
         message="Price lanset loaded",
+    )
+
+
+@load_prices_router.post("/load-price-opt", summary="Load price of Opt")
+async def load_price_opt(
+    price_loader: Annotated[PriceLoaderOpt, Depends(get_price_loader_opt)],
+) -> SuccessResponse:
+    logger.info(
+        "Supplier price loading started",
+        extra={"supplier": "opt"},
+    )
+    upload_result, details = await price_loader.process_price()
+    logger.info(
+        "Supplier price loading completed",
+        extra={"supplier": "opt"},
+    )
+    return SuccessResponse(
+        data=upload_result.model_dump(),
+        details=details,
+        message="Price opt loaded",
     )
 
 

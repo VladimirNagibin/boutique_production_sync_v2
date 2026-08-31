@@ -21,6 +21,8 @@ from common.exceptions.settings import InvalidSettingsValueError
 DEFAULT_LANSET_PRICE_SENDER = "user@gmail.com"
 DEFAULT_NULAN_PRICES_URL = "https://disk.yandex.ru/disk"
 DEFAULT_NULAN_API_URL = "https://cloud-api.yandex.net/v1/disk/public/resources"
+DEFAULT_OPT_BLANK_URL = "https://opt-centre.ru/blank-zakaza"
+HTTP_URL_PATTERN = r"^https?://[^\s/$.?#].[^\s]*$"
 
 
 # ===== Настройки Price =====
@@ -39,6 +41,10 @@ class PriceSettings(BaseSettings):
     nulan_api_url: str = Field(
         default=DEFAULT_NULAN_API_URL,
         description="Nulan api url",
+    )
+    opt_blank_url: str = Field(
+        default=DEFAULT_OPT_BLANK_URL,
+        description="Opt-centre blank-zakaza page URL",
     )
 
     model_config = SettingsConfigDict(
@@ -81,14 +87,7 @@ class PriceSettings(BaseSettings):
         Raises:
             InvalidSettingsValueError: Если URL не начинается с http:// или https://.
         """
-        pattern = r"^https?://[^\s/$.?#].[^\s]*$"
-        if not re.match(pattern, v):
-            raise InvalidSettingsValueError(
-                field_name="nulan_price_url",
-                value=v,
-                reason="Invalid URL format. Must start with http:// or https://",
-            )
-        return v
+        return cls._validate_http_url("nulan_price_url", v)
 
     @field_validator("nulan_api_url")
     @classmethod
@@ -105,11 +104,34 @@ class PriceSettings(BaseSettings):
         Raises:
             InvalidSettingsValueError: Если URL не начинается с http:// или https://.
         """
-        pattern = r"^https?://[^\s/$.?#].[^\s]*$"
-        if not re.match(pattern, v):
+        return cls._validate_http_url("nulan_api_url", v)
+
+    @field_validator("opt_blank_url")
+    @classmethod
+    def validate_opt_blank_url(cls, v: str) -> str:
+        """
+        Проверяет корректность URL страницы бланка Opt.
+
+        Args:
+            v: Значение поля.
+
+        Returns:
+            Проверенное значение.
+
+        Raises:
+            InvalidSettingsValueError: Если URL не начинается с http:// или https://.
+        """
+        return cls._validate_http_url("opt_blank_url", v)
+
+    @staticmethod
+    def _validate_http_url(field_name: str, value: str) -> str:
+        """Проверяет, что значение — HTTP(S) URL."""
+        if not re.match(HTTP_URL_PATTERN, value):
             raise InvalidSettingsValueError(
-                field_name="nulan_api_url",
-                value=v,
-                reason="Invalid URL format. Must start with http:// or https://",
+                field_name=field_name,
+                value=value,
+                reason=(
+                    "Invalid URL format. Must start with http:// or https://"
+                ),
             )
-        return v
+        return value
