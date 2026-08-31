@@ -9,13 +9,16 @@ import pandas as pd
 from fastapi import Depends
 from pandas import DataFrame
 from psycopg2.extras import execute_values
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine, func, select, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.exceptions.database import DatabaseLoadError
 from common.exceptions.file import CsvParsingError, FileAppNotFoundError
 from core.logger import get_logger
 from db.postgres import get_session_generator, run_sync_db_operation
+from models.supplier_models import SupplierClothingCode, SupplierPrice
+from schemas.supplier_schemas import SupplierProduct
 
 
 logger = get_logger(__name__)
@@ -73,6 +76,78 @@ class SupplierClothingCodeRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def get_max_code(self, supplier_id: int) -> int:
+        """Возвращает максимальный code поставщика или 0, если записей нет."""
+        stmt = select(func.max(SupplierClothingCode.code)).where(
+            SupplierClothingCode.supplier_id == supplier_id
+        )
+        result = await self._session.scalar(stmt)
+        max_code = int(result or 0)
+        logger.debug(
+            "Supplier maximum clothing code retrieved",
+            extra={"supplier_id": supplier_id, "max_code": max_code},
+        )
+        return max_code
+
+    async def get_lookup_by_name(
+        self, supplier_id: int
+    ) -> dict[str, SupplierProduct]:
+        """
+        Загружает справочник одежды поставщика: name -> code/категория.
+        """
+        stmt = select(SupplierClothingCode).where(
+            SupplierClothingCode.supplier_id == supplier_id
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        lookup: dict[str, SupplierProduct] = {}
+        for row in rows:
+            lookup[row.name] = SupplierProduct(
+                code=row.code,
+                category=row.category or "?",
+                subcategory=row.subcategory or "?",
+            )
+        logger.info(
+            "Supplier clothing lookup loaded",
+            extra={"supplier_id": supplier_id, "item_count": len(lookup)},
+        )
+        return lookup
+
+    async def insert_missing_from_price(self) -> None:
+        """
+        Добавляет в справочник одежды коды из прайса, которых ещё нет.
+        """
+        source = select(
+            SupplierPrice.code,
+            SupplierPrice.name,
+            SupplierPrice.category,
+            SupplierPrice.subcategory,
+            SupplierPrice.supplier_id,
+            SupplierPrice.product_summary,
+            SupplierPrice.size,
+            SupplierPrice.color,
+        )
+        stmt = (
+            insert(SupplierClothingCode)
+            .from_select(
+                [
+                    "code",
+                    "name",
+                    "category",
+                    "subcategory",
+                    "supplier_id",
+                    "product_summary",
+                    "size",
+                    "color",
+                ],
+                source,
+            )
+            .on_conflict_do_nothing(
+                constraint="uq_supplier_clothing_codes_code_supplier"
+            )
+        )
+        await self._session.execute(stmt)
+        logger.info("Supplier clothing codes insert from price completed")
 
     async def load_from_csv_with_truncate(
         self,

@@ -7,7 +7,6 @@ import pandas as pd
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import StreamingResponse
 
-# from api.deps import verify_api_key
 from core.logger import get_logger
 from schemas.response_schemas import SuccessResponse
 from services.prices.lanseti.price_loader import (
@@ -24,7 +23,7 @@ from services.prices.nulan.price_loader import (
 
 logger = get_logger(__name__)
 
-load_prices_router = APIRouter()  # dependencies=[Depends(verify_api_key)])
+load_prices_router = APIRouter()
 
 
 @load_prices_router.post("/load-price-lanset", summary="Load price of Lanset")

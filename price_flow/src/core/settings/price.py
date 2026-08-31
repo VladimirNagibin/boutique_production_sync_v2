@@ -20,9 +20,7 @@ from common.exceptions.settings import InvalidSettingsValueError
 # ===== Константы =====
 DEFAULT_LANSET_PRICE_SENDER = "user@gmail.com"
 DEFAULT_NULAN_PRICES_URL = "https://disk.yandex.ru/disk"
-DEFAULT_NULAN_API_URL = (
-    "https://cloud-api.yandex.net/v1/disk/public/resources"
-)
+DEFAULT_NULAN_API_URL = "https://cloud-api.yandex.net/v1/disk/public/resources"
 
 
 # ===== Настройки Price =====
@@ -34,7 +32,7 @@ class PriceSettings(BaseSettings):
         default=DEFAULT_LANSET_PRICE_SENDER,
         description="Sender lanseti",
     )
-    nulan_price_url: str = Field(
+    nulan_prices_url: str = Field(
         default=DEFAULT_NULAN_PRICES_URL,
         description="Nulan price url",
     )
@@ -68,7 +66,7 @@ class PriceSettings(BaseSettings):
             )
         return v
 
-    @field_validator("nulan_price_url")
+    @field_validator("nulan_prices_url")
     @classmethod
     def validate_price_url(cls, v: str) -> str:
         """

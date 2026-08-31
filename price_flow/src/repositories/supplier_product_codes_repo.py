@@ -18,6 +18,7 @@ from common.exceptions.file import CsvParsingError, FileAppNotFoundError
 from core.logger import get_logger
 from db.postgres import get_session_generator, run_sync_db_operation
 from models.supplier_models import SupplierProductCode
+from schemas.supplier_schemas import SupplierProduct
 
 
 logger = get_logger(__name__)
@@ -125,6 +126,29 @@ class SupplierProductCodeRepository:
         stmt = stmt.where(SupplierProductCode.supplier_id == supplier_id)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def get_category_map(
+        self, supplier_id: int
+    ) -> dict[int, SupplierProduct]:
+        """
+        Возвращает карту code -> категория/подкатегория для поставщика.
+        """
+        items = await self.get_supplier_data(supplier_id)
+        category_map: dict[int, SupplierProduct] = {}
+        for item in items:
+            category_map[item.code] = SupplierProduct(
+                code=item.code,
+                category=item.category or "?",
+                subcategory=item.subcategory or "?",
+            )
+        logger.info(
+            "Supplier product category map loaded",
+            extra={
+                "supplier_id": supplier_id,
+                "item_count": len(category_map),
+            },
+        )
+        return category_map
 
     # ----- Массовая загрузка из CSV (синхронная, через pandas) -----
 
