@@ -12,32 +12,12 @@ from fastapi import Depends
 from common.log_context import bind_class, log_run
 from core.logger import get_logger
 from core.settings import settings
+from services.local_paths import PRICES_SUBDIR, resolve_local_path
 from services.storage import State, get_storage
 from services.token_cipher import TokenCipher, get_token_cipher
 
 
 logger = get_logger(__name__)
-
-PRICES_SUBDIR = Path("data") / "prices"
-
-
-def resolve_local_path(
-    stored: str, base_dir: str | Path | None = None
-) -> Path:
-    """
-    Собирает абсолютный путь к локальному файлу прайса.
-
-    Относительные пути из стейта считаются от settings.base_dir
-    (/app/src в контейнере), а не от cwd (/app).
-    """
-    root = Path(base_dir if base_dir is not None else settings.base_dir)
-    path = Path(stored)
-    if path.is_absolute():
-        return path
-    joined = root / path
-    if joined.exists() or path.parent != Path("."):
-        return joined
-    return root / PRICES_SUBDIR / path.name
 
 
 class DropboxService:

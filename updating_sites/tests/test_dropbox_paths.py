@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from services.dropbox_ import resolve_local_path
+from core.settings import settings
+from services.local_paths import resolve_local_path
 
 
 def test_resolve_relative_data_prices(tmp_path: Path) -> None:
@@ -18,3 +19,9 @@ def test_resolve_absolute_path_unchanged(tmp_path: Path) -> None:
     absolute = tmp_path / "other" / "file.xls"
     resolved = resolve_local_path(str(absolute), base_dir=tmp_path)
     assert resolved == absolute
+
+
+def test_ornam_csv_resolves_under_base_dir() -> None:
+    resolved = resolve_local_path("data/ornam/Products.txt")
+    expected = Path(settings.base_dir) / "data" / "ornam" / "Products.txt"
+    assert resolved == expected
