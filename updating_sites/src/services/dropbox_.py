@@ -1,7 +1,7 @@
 import base64
-import os
 from functools import lru_cache
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any
 
 import dropbox
@@ -17,6 +17,27 @@ from services.token_cipher import TokenCipher, get_token_cipher
 
 
 logger = get_logger(__name__)
+
+PRICES_SUBDIR = Path("data") / "prices"
+
+
+def resolve_local_path(
+    stored: str, base_dir: str | Path | None = None
+) -> Path:
+    """
+    Собирает абсолютный путь к локальному файлу прайса.
+
+    Относительные пути из стейта считаются от settings.base_dir
+    (/app/src в контейнере), а не от cwd (/app).
+    """
+    root = Path(base_dir if base_dir is not None else settings.base_dir)
+    path = Path(stored)
+    if path.is_absolute():
+        return path
+    joined = root / path
+    if joined.exists() or path.parent != Path("."):
+        return joined
+    return root / PRICES_SUBDIR / path.name
 
 
 class DropboxService:
@@ -293,40 +314,40 @@ class DropboxService:
         dropbox_path: str,
     ) -> bool:
         """Загружает файл и проверяет успешность."""
+        resolved = resolve_local_path(local_path)
         try:
-            with open(local_path, "rb") as f:
+            with resolved.open("rb") as f:
                 metadata = dbx.files_upload(
                     f.read(),
                     dropbox_path,
                     mode=dropbox.files.WriteMode.overwrite,
                 )
-            # Проверяем, что загрузился корректно
-            local_size = os.path.getsize(local_path)
+            local_size = resolved.stat().st_size
             if metadata.size == local_size:
                 logger.info(
                     "File uploaded successfully",
                     extra={
-                        "local_path": local_path,
+                        "local_path": str(resolved),
                         "dropbox_path": dropbox_path,
                         "size": metadata.size,
                     },
                 )
                 return True
-            else:
-                logger.warning(
-                    "File size mismatch after upload",
-                    extra={
-                        "local_size": local_size,
-                        "remote_size": metadata.size,
-                    },
-                )
-                return False
+            logger.warning(
+                "File size mismatch after upload",
+                extra={
+                    "local_size": local_size,
+                    "remote_size": metadata.size,
+                },
+            )
+            return False
         except FileNotFoundError:
-            logger.error("Local file not found", extra={"path": local_path})
+            logger.error("Local file not found", extra={"path": str(resolved)})
             return False
         except PermissionError:
             logger.error(
-                "Permission denied reading file", extra={"path": local_path}
+                "Permission denied reading file",
+                extra={"path": str(resolved)},
             )
             return False
         except dropbox.exceptions.ApiError as e:
@@ -376,29 +397,30 @@ class DropboxService:
 
     def _delete_local_file(self, local_path: str) -> bool:
         """Удаляет локальный файл."""
+        resolved = resolve_local_path(local_path)
         try:
-            os.remove(local_path)
+            resolved.unlink()
             logger.info(
                 "Local file deleted",
-                extra={"path": local_path},
+                extra={"path": str(resolved)},
             )
             return True
         except FileNotFoundError:
             logger.warning(
                 "Local file already deleted",
-                extra={"path": local_path},
+                extra={"path": str(resolved)},
             )
             return True
         except PermissionError:
             logger.error(
                 "Permission denied deleting local file",
-                extra={"path": local_path},
+                extra={"path": str(resolved)},
             )
             return False
         except Exception as e:
             logger.error(
                 "Unexpected error deleting local file",
-                extra={"path": local_path, "error": str(e)},
+                extra={"path": str(resolved), "error": str(e)},
                 exc_info=True,
             )
             return False
@@ -420,7 +442,7 @@ class DropboxService:
         if not local_file_path:
             return None
 
-        local_filename = os.path.basename(local_file_path)
+        local_filename = Path(local_file_path).name
         dropbox_dir = dropbox_base_path.rstrip("/") + "/"
         dropbox_file_path = f"{dropbox_dir}{local_filename}"
 
@@ -442,7 +464,7 @@ class DropboxService:
         # 2. Удаляем старый файл, если он был сохранён
         old_dropbox_path = self.state.get_state(f"{portal}_fa{ind}_dropbox")
         if old_dropbox_path:
-            old_filename = os.path.basename(old_dropbox_path)
+            old_filename = Path(old_dropbox_path).name
             old_entry = {
                 "old_filename": old_filename,
                 "old_dropbox_path": old_dropbox_path,
@@ -452,7 +474,9 @@ class DropboxService:
             if self._delete_dropbox_file(dbx, old_dropbox_path):
                 old_entry["del_dropbox"] = True
                 # Удаляем локальную копию старого файла
-                old_local_path = os.path.join("data/prices", old_filename)
+                old_local_path = str(
+                    Path(settings.base_dir) / PRICES_SUBDIR / old_filename
+                )
                 if self._delete_local_file(old_local_path):
                     old_entry["del_local"] = True
                 else:
