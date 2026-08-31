@@ -19,6 +19,7 @@ import queue
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -54,6 +55,71 @@ SEQ_WORKER_JOIN_TIMEOUT = 5.0
 FILE_MAX_BYTES = 10 * 1024 * 1024
 FILE_BACKUP_COUNT = 5
 _SEQ_STOP = object()
+
+# Ключи extra, которые logging.makeRecord запрещает (ломают emit → Seq).
+_SAMPLE_RECORD = logging.LogRecord(
+    name="n",
+    level=logging.INFO,
+    pathname="",
+    lineno=0,
+    msg="",
+    args=(),
+    exc_info=None,
+)
+_RESERVED_LOG_EXTRA_KEYS: frozenset[str] = frozenset(_SAMPLE_RECORD.__dict__) | {
+    "asctime",
+    "message",
+}
+
+
+def sanitize_log_extra(
+    extra: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    """Убирает ключи extra, конфликтующие с LogRecord (например filename)."""
+    if extra is None:
+        return None
+    cleaned: dict[str, object] = {}
+    for key, value in extra.items():
+        if key not in _RESERVED_LOG_EXTRA_KEYS:
+            cleaned[key] = value
+            continue
+        alias = "file_name" if key == "filename" else f"extra_{key}"
+        cleaned.setdefault(alias, value)
+    return cleaned
+
+
+class SafeExtraLogger(logging.Logger):
+    """Logger, который не падает на extra с зарезервированными ключами."""
+
+    def makeRecord(
+        self,
+        name: str,
+        level: int,
+        fn: str,
+        lno: int,
+        msg: object,
+        args: Any,
+        exc_info: Any,
+        func: str | None = None,
+        extra: Mapping[str, object] | None = None,
+        sinfo: str | None = None,
+    ) -> logging.LogRecord:
+        return super().makeRecord(
+            name,
+            level,
+            fn,
+            lno,
+            msg,
+            args,
+            exc_info,
+            func=func,
+            extra=sanitize_log_extra(extra),
+            sinfo=sinfo,
+        )
+
+
+# До первого getLogger: extra filename иначе роняет emit, Seq не получит лог.
+logging.setLoggerClass(SafeExtraLogger)
 
 
 def _create_seq_internal_logger() -> logging.Logger:
