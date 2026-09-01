@@ -70,8 +70,28 @@ services:
     restart: unless-stopped
     ports:
       - 8000:80
+    volumes:
+      - gateway-nginx-logs:/var/log/nginx
     depends_on:
       - price_flow
+
+  gateway-logs:
+    image: timberio/vector:0.48.0-alpine
+    restart: unless-stopped
+    volumes:
+      - gateway-nginx-logs:/var/log/nginx:ro
+      - gateway-vector-data:/var/lib/vector
+      - ./infra/vector-nginx.yaml:/etc/vector/vector.yaml:ro
+    env_file:
+      - ./.env.price_flow
+    environment:
+      SEQ_INGEST_URL: http://seq/api/events/raw?clef
+    command: ["--config", "/etc/vector/vector.yaml"]
+    depends_on:
+      seq:
+        condition: service_healthy
+      gateway:
+        condition: service_started
 
   db:
     image: postgres:17.4-bookworm
@@ -137,3 +157,5 @@ volumes:
   db_data:
   redis-data:
   seq-data:
+  gateway-nginx-logs:
+  gateway-vector-data:

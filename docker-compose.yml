@@ -46,13 +46,31 @@ services:
     image: nginx:alpine
     volumes:
       - ./infra/nginx.conf:/etc/nginx/templates/default.conf.template
+      - ./infra/nginx-log-format.conf:/etc/nginx/conf.d/00-log-format.conf:ro
       - ./infra/index.html:/usr/share/nginx/html/index.html
+      - gateway-nginx-logs:/var/log/nginx
     # build: ./infra/
     restart: unless-stopped
     ports:
       - 80:80
     depends_on:
       - price_flow
+
+  gateway-logs:
+    image: timberio/vector:0.48.0-alpine
+    restart: unless-stopped
+    volumes:
+      - gateway-nginx-logs:/var/log/nginx:ro
+      - gateway-vector-data:/var/lib/vector
+      - ./infra/vector-nginx.yaml:/etc/vector/vector.yaml:ro
+    environment:
+      SEQ_INGEST_URL: http://seq/api/events/raw?clef
+    command: ["--config", "/etc/vector/vector.yaml"]
+    depends_on:
+      seq:
+        condition: service_healthy
+      gateway:
+        condition: service_started
 
   db:
     image: postgres:17.4-bookworm
