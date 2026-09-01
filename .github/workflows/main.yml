@@ -11,7 +11,27 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [converter, price_flow, updating_sites, infra]
+        include:
+          - service: converter
+            dockerfile: converter/Dockerfile
+            image: boutique_converter
+            target: production
+          - service: price_flow
+            dockerfile: price_flow/Dockerfile
+            image: boutique_price_flow
+            target: production
+          - service: updating_sites
+            dockerfile: updating_sites/Dockerfile
+            image: boutique_updating_sites
+            target: production
+          - service: infra
+            dockerfile: infra/Dockerfile
+            image: boutique_infra
+            target: production
+          - service: gateway_logs
+            dockerfile: infra/Dockerfile
+            image: boutique_gateway_logs
+            target: vector
     #needs:
     #  - tests
     #  - lint
@@ -26,16 +46,16 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and push ${{ matrix.service }}
+      - name: Build and push ${{ matrix.image }}
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: ./${{ matrix.service }}/Dockerfile
+          file: ./${{ matrix.dockerfile }}
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/boutique_${{ matrix.service }}:latest
-            ${{ secrets.DOCKER_USERNAME }}/boutique_${{ matrix.service }}:${{ github.sha }}
-          target: production
+            ${{ secrets.DOCKER_USERNAME }}/${{ matrix.image }}:latest
+            ${{ secrets.DOCKER_USERNAME }}/${{ matrix.image }}:${{ github.sha }}
+          target: ${{ matrix.target }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -64,6 +84,7 @@ jobs:
         passphrase: ${{ secrets.SSH_PASSPHRASE }}
         script: |
           cd boutique
+          sudo rm -rf infra/vector-nginx.yaml
           sudo docker compose -f docker-compose.production.yml pull
           sudo docker compose -f docker-compose.production.yml down
           sudo docker compose -f docker-compose.production.yml up -d
