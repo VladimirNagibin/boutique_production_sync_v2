@@ -1,0 +1,23 @@
+data_dir: /var/lib/vector
+
+sources:
+  nginx_access:
+    type: file
+    include:
+      - /var/log/nginx/access.clef
+    read_from: beginning
+
+sinks:
+  seq:
+    type: http
+    inputs:
+      - nginx_access
+    uri: "${SEQ_INGEST_URL}"
+    method: post
+    encoding:
+      codec: text
+    framing:
+      method: newline_delimited
+    request:
+      headers:
+        Content-Type: application/vnd.serilog.clef

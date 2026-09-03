@@ -55,8 +55,14 @@ services:
     ports:
       - "5341:80"
 
+  gateway-logs:
+    env_file:
+      - ./.env.price_flow
+
 volumes:
   seq-data:
   db_data:
   redis-data:
   upd_sites_data:
+  gateway-nginx-logs:
+  gateway-vector-data:
