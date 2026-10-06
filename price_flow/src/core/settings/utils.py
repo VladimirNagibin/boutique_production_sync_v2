@@ -5,7 +5,6 @@
 - уровень логирования (LogLevel)
 - построение URL подключения к БД (DatabaseURL)
 - валидация целых положительных чисел
-- системные поля и фильтры для журналирования
 Все сообщения об ошибках на английском, комментарии и docstrings на русском.
 """
 
@@ -100,46 +99,3 @@ def validate_positive_int(field_name: str, v: int) -> int:
             reason="Value must be positive",
         )
     return v
-
-
-# ===== Константы для логирования =====
-
-# Стандартные поля записи лога, которые не следует включать в
-# пользовательские свойства
-SYSTEM_FIELDS: tuple[str, ...] = (
-    "args",
-    "asctime",
-    "created",
-    "exc_info",
-    "exc_text",
-    "filename",
-    "funcName",
-    "levelname",
-    "levelno",
-    "lineno",
-    "module",
-    "msecs",
-    "message",
-    "msg",
-    "name",
-    "pathname",
-    "process",
-    "processName",
-    "relativeCreated",
-    "stack_info",
-    "thread",
-    "threadName",
-    "module_name",
-    "class_name",
-    "method_name",
-    "source_line",
-)
-
-# Маппинг кастомных атрибутов записи в имена свойств для журналирования
-# (например, для Seq)
-FILTER_FIELDS: list[tuple[str, str]] = [
-    ("module_name", "SourceModule"),
-    ("class_name", "SourceClass"),
-    ("method_name", "SourceMethod"),
-    ("source_line", "SourceLine"),
-]

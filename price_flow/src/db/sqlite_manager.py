@@ -77,7 +77,6 @@ class SQLiteManager(IDatabaseManager):
     @asynccontextmanager
     async def get_connection(self) -> AsyncIterator[aiosqlite.Connection]:
         """Async context manager for database connections."""
-        # logger.info(f"Initializing SQLite database at {self.db_path}")
         conn = await self.get_db_connection()
 
         try:

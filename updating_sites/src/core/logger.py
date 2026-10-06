@@ -18,7 +18,10 @@ os.environ.setdefault(
     str(settings.APP_LOG_TO_FILE).lower(),
 )
 
-configure_logging(env_file=discover_env_file(".env.upd_sites"))
+configure_logging(
+    env_file=discover_env_file(".env.upd_sites"),
+    service_name=SERVICE_NAME,
+)
 
 
 def get_logger(module_name: str) -> logging.Logger:
