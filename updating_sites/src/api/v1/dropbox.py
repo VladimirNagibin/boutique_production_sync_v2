@@ -76,9 +76,9 @@ def upd_portal_dropbox(
 
 
 @dropbox_router.get(
-    "/upd_portal_dropbox_",
-    summary="update portal dropbox",
-    description="Update prices in dropbox.",
+    "/upd_portal_dropbox_test",
+    summary="update portal dropbox test",
+    description="Update prices in dropbox test.",
 )
 def upd_portal_dropbox_(
     response: Response,
