@@ -8,8 +8,16 @@ from typing import Any
 import aiofiles
 import pandas as pd
 
-from fastapi import HTTPException, UploadFile
+from fastapi import UploadFile, status
 
+from common.exceptions.enums import ErrorCode
+from common.exceptions.file import (
+    CsvParsingError,
+    GzipExtractionError,
+    JsonParsingError,
+    ZipExtractionError,
+)
+from common.exceptions.processing import DataProcessingError
 from core.logger import get_logger
 
 
@@ -107,8 +115,10 @@ class FileService:
         """
         if not data:
             logger.warning("CSV export requested without data")
-            raise HTTPException(
-                status_code=400, detail="Нет данных для экспорта"
+            raise DataProcessingError(
+                error_code=ErrorCode.EMPTY_DATA_ERROR,
+                message="No data to export",
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         csv_buffer = io.BytesIO()
@@ -183,24 +193,30 @@ class FileService:
                         return records
 
                 logger.warning("ZIP archive contains no supported data file")
-                raise HTTPException(
-                    status_code=400, detail="В архиве нет JSON или CSV файла"
+                raise ZipExtractionError(
+                    path="upload.zip",
+                    message="ZIP archive contains no JSON or CSV file",
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
         except zipfile.BadZipFile as e:
             logger.warning(
                 "ZIP unpack failed",
                 extra={"error_type": type(e).__name__},
             )
-            raise HTTPException(
-                status_code=400, detail="Некорректный ZIP файл"
+            raise ZipExtractionError(
+                path="upload.zip",
+                message="Invalid ZIP file",
+                status_code=status.HTTP_400_BAD_REQUEST,
             ) from e
         except json.JSONDecodeError as e:
             logger.warning(
                 "ZIP JSON decode failed",
                 extra={"error_type": type(e).__name__},
             )
-            raise HTTPException(
-                status_code=400, detail="Некорректный JSON файл"
+            raise JsonParsingError(
+                path="upload.zip",
+                message="Invalid JSON file in ZIP archive",
+                status_code=status.HTTP_400_BAD_REQUEST,
             ) from e
 
     @staticmethod
@@ -224,16 +240,20 @@ class FileService:
                 "GZIP unpack failed",
                 extra={"error_type": type(e).__name__},
             )
-            raise HTTPException(
-                status_code=400, detail="Некорректный GZIP файл"
+            raise GzipExtractionError(
+                path="upload.gz",
+                message="Invalid GZIP file",
+                status_code=status.HTTP_400_BAD_REQUEST,
             ) from e
         except json.JSONDecodeError as e:
             logger.warning(
                 "GZIP JSON decode failed",
                 extra={"error_type": type(e).__name__},
             )
-            raise HTTPException(
-                status_code=400, detail="Некорректный JSON"
+            raise JsonParsingError(
+                path="upload.gz",
+                message="Invalid JSON in GZIP file",
+                status_code=status.HTTP_400_BAD_REQUEST,
             ) from e
 
     @staticmethod
@@ -244,13 +264,21 @@ class FileService:
         try:
             df = pd.read_csv(io.BytesIO(file_content))
             records: list[dict[str, Any]] = df.to_dict("records")
-        except Exception as e:
+        except (
+            pd.errors.EmptyDataError,
+            pd.errors.ParserError,
+            UnicodeDecodeError,
+            ValueError,
+        ) as e:
             logger.warning(
                 "CSV unpack failed",
                 extra={"error_type": type(e).__name__},
             )
-            raise HTTPException(
-                status_code=400, detail=f"Ошибка чтения CSV: {e!s}"
+            raise CsvParsingError(
+                path="upload.csv",
+                message="Failed to read CSV file",
+                details={"error": str(e)},
+                status_code=status.HTTP_400_BAD_REQUEST,
             ) from e
         else:
             logger.info(
@@ -273,8 +301,10 @@ class FileService:
                 "JSON unpack failed",
                 extra={"error_type": type(e).__name__},
             )
-            raise HTTPException(
-                status_code=400, detail="Некорректный JSON файл"
+            raise JsonParsingError(
+                path="upload.json",
+                message="Invalid JSON file",
+                status_code=status.HTTP_400_BAD_REQUEST,
             ) from e
         else:
             logger.info(

@@ -5,11 +5,13 @@ from contextlib import asynccontextmanager
 import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from fastapi import FastAPI
-from fastapi.responses import ORJSONResponse
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse, ORJSONResponse
 from redis.asyncio import Redis
 
 from api.v1.upload_files import upload_file_router
+from common.exceptions.base import BaseAppException
+from common.exceptions.enums import ErrorCode
 from common.request_context_middleware import RequestContextMiddleware
 from core.logger import get_logger
 from core.settings import settings
@@ -166,6 +168,87 @@ app = FastAPI(
 
 app.include_router(upload_file_router, prefix="/api/v1/files", tags=["files"])
 app.add_middleware(RequestContextMiddleware)
+
+
+@app.exception_handler(BaseAppException)
+async def handle_base_app_exception(
+    request: Request, exc: BaseAppException
+) -> JSONResponse:
+    """
+    Обрабатывает все бизнес-исключения приложения.
+
+    Args:
+        request: Входящий HTTP-запрос.
+        exc: Исключение приложения.
+
+    Returns:
+        JSON-ответ со стандартизированной ошибкой.
+    """
+    request_id = getattr(request.state, "request_id", None)
+    status_code = exc.status_code or status.HTTP_500_INTERNAL_SERVER_ERROR
+    log_method = (
+        logger.warning
+        if status_code < status.HTTP_500_INTERNAL_SERVER_ERROR
+        else logger.error
+    )
+    log_method(
+        "Application exception handled",
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": status_code,
+            "error_code": exc.error_code,
+            "error_type": type(exc).__name__,
+        },
+    )
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error_code": exc.error_code,
+            "message": exc.message,
+            "details": exc.details,
+            "request_id": request_id,
+        },
+        headers={"X-Request-ID": request_id or ""},
+    )
+
+
+@app.exception_handler(Exception)
+async def handle_unexpected_exception(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """
+    Обрабатывает непредвиденные исключения.
+
+    Args:
+        request: Входящий HTTP-запрос.
+        exc: Непредвиденное исключение.
+
+    Returns:
+        JSON-ответ с внутренней ошибкой.
+    """
+    request_id = getattr(request.state, "request_id", None)
+    logger.error(
+        "Unexpected request exception",
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "error_type": type(exc).__name__,
+        },
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "error_code": str(ErrorCode.INTERNAL_ERROR),
+            "message": "Internal server error",
+            "details": {"error_type": type(exc).__name__},
+            "request_id": request_id,
+        },
+        headers={"X-Request-ID": request_id or ""},
+    )
 
 
 if __name__ == "__main__":

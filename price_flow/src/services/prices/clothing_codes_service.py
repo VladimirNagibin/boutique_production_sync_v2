@@ -2,9 +2,13 @@ import math
 
 from typing import Annotated, Any
 
-from fastapi import Depends, HTTPException, UploadFile
+from fastapi import Depends, UploadFile, status
 from fastapi.responses import StreamingResponse
 
+from common.exceptions.base import BaseAppException
+from common.exceptions.enums import ErrorCode
+from common.exceptions.processing import DataProcessingError
+from common.exceptions.site import EntityNotFoundException
 from core.logger import get_logger
 from repositories.clothing_codes_repo import (
     ClothingCodesRepo,
@@ -48,8 +52,8 @@ class ClothingCodesService:
                 "Clothing code export has no data",
                 extra={"supplier_id": supplier_id},
             )
-            raise HTTPException(
-                status_code=404, detail="Нет данных для экспорта"
+            raise EntityNotFoundException(
+                message="No clothing codes found for export"
             )
 
         # Конвертируем в формат для экспорта
@@ -133,13 +137,20 @@ class ClothingCodesService:
                 "Clothing code import file is empty",
                 extra={"file_name": file.filename},
             )
-            raise HTTPException(status_code=400, detail="Пустой файл")
+            raise DataProcessingError(
+                error_code=ErrorCode.EMPTY_DATA_ERROR,
+                message="Uploaded file is empty",
+                details={"file_name": file.filename},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Распаковываем
         try:
             data = FileService.detect_format_and_unpack(
                 content, file.filename or "upload.bin"
             )
+        except BaseAppException:
+            raise
         except Exception as e:
             logger.warning(
                 "Clothing code import unpack failed",
@@ -148,8 +159,14 @@ class ClothingCodesService:
                     "error_type": type(e).__name__,
                 },
             )
-            raise HTTPException(
-                status_code=400, detail=f"Ошибка распаковки: {e!s}"
+            raise DataProcessingError(
+                message="Failed to unpack clothing code import file",
+                details={
+                    "file_name": file.filename,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+                status_code=status.HTTP_400_BAD_REQUEST,
             ) from e
 
         if not data:
@@ -157,8 +174,11 @@ class ClothingCodesService:
                 "Clothing code import contains no records",
                 extra={"file_name": file.filename},
             )
-            raise HTTPException(
-                status_code=400, detail="Нет данных для импорта"
+            raise DataProcessingError(
+                error_code=ErrorCode.EMPTY_DATA_ERROR,
+                message="No records found for import",
+                details={"file_name": file.filename},
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         cleaned_data = []
@@ -187,9 +207,8 @@ class ClothingCodesService:
                     "Clothing code import filter matched no records",
                     extra={"supplier_id_filter": supplier_id_filter},
                 )
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Нет данных для поставщика {supplier_id_filter}",
+                raise EntityNotFoundException(
+                    message="No records found for supplier"
                 )
 
         # Валидируем все записи
@@ -234,12 +253,12 @@ class ClothingCodesService:
                     "supplier_id_filter": supplier_id_filter,
                 },
             )
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": "Ошибки валидации",
+            raise DataProcessingError(
+                message="Clothing code import validation failed",
+                details={
                     "errors": validation_errors,
                 },
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # Стратегия: очистка перед импортом
