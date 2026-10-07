@@ -4,13 +4,15 @@
 файл с ротацией и удалённый сервер Seq.
 Отправка в Seq выполняется в фоновом потоке через очередь,
 чтобы не блокировать async event loop и не вызывать deadlock.
-Добавляет в каждую запись путь модуля и имя функции
-из стандартных полей LogRecord (pathname, funcName), без inspect.stack().
+Добавляет в каждую запись путь модуля, класс и метод вызова
+(по ``co_qualname`` кадра, без inspect.stack()), поля корреляции
+и маскирует секреты. Обогащение выполняет фильтр на каждом хендлере.
 """
 
 from __future__ import annotations
 
 import atexit
+import io
 import json
 import logging
 import logging.config
@@ -19,15 +21,18 @@ import queue
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 import requests
 from pythonjsonlogger.json import JsonFormatter
-from requests.exceptions import RequestException
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import RequestException, Timeout
 
 from .log_context import (
     get_class_name,
@@ -42,34 +47,32 @@ from .log_redact import (
     redact_text,
 )
 from .settings import AppSettings, SeqSettings, load_prefixed_settings
-from .utils import FILTER_FIELDS, SYSTEM_FIELDS, LogLevel
+from .utils import FILTER_FIELDS, LOG_RECORD_ATTRS, SYSTEM_FIELDS, LogLevel
 
 # ===== Константы настройки =====
 SEQ_BATCH_SIZE = 50
 SEQ_AUTO_FLASH_INTERVAL = 2.0
 SEQ_TIMEOUT = 5
 SEQ_QUEUE_MAXSIZE = 2000
-SEQ_MAX_FAILURES = 5
+SEQ_MAX_RETRIES = 3
+SEQ_RETRY_BASE_DELAY_SECONDS = 0.5
+SEQ_RETRY_MAX_DELAY_SECONDS = 10.0
+SEQ_RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+SEQ_MAX_FAILURES = 3
 SEQ_CIRCUIT_COOLDOWN_SECONDS = 30.0
+SEQ_CIRCUIT_MAX_COOLDOWN_SECONDS = 300.0
 SEQ_WORKER_JOIN_TIMEOUT = 5.0
 FILE_MAX_BYTES = 10 * 1024 * 1024
 FILE_BACKUP_COUNT = 5
+JSON_LOG_FORMAT = (
+    "%(asctime)s %(levelname)s %(name)s %(module_name)s %(class_name)s "
+    "%(method_name)s %(message)s"
+)
 _SEQ_STOP = object()
+_LOGGING_SOURCE_FILE = os.path.normcase(logging.addLevelName.__code__.co_filename)
 
 # Ключи extra, которые logging.makeRecord запрещает (ломают emit → Seq).
-_SAMPLE_RECORD = logging.LogRecord(
-    name="n",
-    level=logging.INFO,
-    pathname="",
-    lineno=0,
-    msg="",
-    args=(),
-    exc_info=None,
-)
-_RESERVED_LOG_EXTRA_KEYS: frozenset[str] = frozenset(_SAMPLE_RECORD.__dict__) | {
-    "asctime",
-    "message",
-}
+_RESERVED_LOG_EXTRA_KEYS: frozenset[str] = LOG_RECORD_ATTRS
 
 
 def sanitize_log_extra(
@@ -88,8 +91,37 @@ def sanitize_log_extra(
     return cleaned
 
 
+def _is_internal_frame(frame: FrameType) -> bool:
+    """True для кадров модуля logging и механизма импорта (как в stdlib)."""
+    filename = os.path.normcase(frame.f_code.co_filename)
+    return filename == _LOGGING_SOURCE_FILE or (
+        "importlib" in filename and "_bootstrap" in filename
+    )
+
+
+def split_qualname(qualname: str) -> tuple[str | None, str]:
+    """
+    Делит ``co_qualname`` на имя класса и имя функции.
+
+    Args:
+        qualname: Например ``PriceLoader.run`` или ``helper``.
+
+    Returns:
+        Кортеж (класс или None, функция): ``("PriceLoader", "run")``.
+        Для вложенных функций (``f.<locals>.inner``) класс — None.
+    """
+    parts = qualname.split(".")
+    owner = parts[-2] if len(parts) > 1 else None
+    if owner == "<locals>":
+        owner = None
+    return owner, parts[-1]
+
+
 class SafeExtraLogger(logging.Logger):
-    """Logger, который не падает на extra с зарезервированными ключами."""
+    """
+    Logger, который не падает на extra с зарезервированными ключами
+    и записывает в ``funcName`` квалифицированное имя (``Class.method``).
+    """
 
     def makeRecord(
         self,
@@ -117,6 +149,36 @@ class SafeExtraLogger(logging.Logger):
             sinfo=sinfo,
         )
 
+    def findCaller(
+        self,
+        stack_info: bool = False,
+        stacklevel: int = 1,
+    ) -> tuple[str, int, str, str | None]:
+        """
+        Находит кадр вызывающего кода, как stdlib, но возвращает
+        ``co_qualname`` вместо ``co_name``: из него фильтр получает
+        class_name и method_name без inspect.stack().
+        """
+        frame = sys._getframe(0)
+        # Пропускаем кадры logging; stacklevel считает только «внешние» кадры.
+        while stacklevel > 0:
+            next_frame = frame.f_back
+            if next_frame is None:
+                break
+            frame = next_frame
+            if not _is_internal_frame(frame):
+                stacklevel -= 1
+
+        stack_text: str | None = None
+        if stack_info:
+            with io.StringIO() as buffer:
+                buffer.write("Stack (most recent call last):\n")
+                traceback.print_stack(frame, file=buffer)
+                stack_text = buffer.getvalue().rstrip("\n")
+
+        code = frame.f_code
+        return code.co_filename, frame.f_lineno or 0, code.co_qualname, stack_text
+
 
 # До первого getLogger: extra filename иначе роняет emit, Seq не получит лог.
 logging.setLoggerClass(SafeExtraLogger)
@@ -143,12 +205,27 @@ def _create_seq_internal_logger() -> logging.Logger:
     return internal_logger
 
 
+def _parse_retry_after(value: str | None) -> float | None:
+    """Возвращает задержку из заголовка Retry-After (только секунды)."""
+    if not value:
+        return None
+    try:
+        delay = float(value)
+    except ValueError:
+        # Формат HTTP-date не поддерживаем — используем экспоненциальную задержку.
+        return None
+    return delay if delay >= 0 else None
+
+
 # ===== Хендлер для асинхронной отправки в Seq =====
 class SeqJsonHandler(logging.Handler):
     """Отправляет логи в Seq через HTTP API без блокировки вызывающего потока.
 
     ``emit`` только форматирует запись и кладёт её в очередь.
-    Фоновый поток накапливает события и отправляет их пачками.
+    Фоновый поток накапливает события и отправляет их пачками,
+    повторяя временные ошибки (сеть, 429, 5xx) с экспоненциальной задержкой.
+    После серии неудачных пачек открывается circuit breaker, время
+    которого растёт экспоненциально до SEQ_CIRCUIT_MAX_COOLDOWN_SECONDS.
     Ошибки отправки пишутся во внутренний stderr-логгер без propagate.
     """
 
@@ -178,9 +255,11 @@ class SeqJsonHandler(logging.Handler):
         self._queue: queue.Queue[str | object] = queue.Queue(maxsize=queue_maxsize)
         self._logger = _create_seq_internal_logger()
         self._fail_count = 0
+        self._circuit_trips = 0
         self._circuit_open_until = 0.0
         self._dropped_count = 0
-        self._closed = False
+        self._stats_lock = threading.Lock()
+        self._closing = threading.Event()
         self._worker = threading.Thread(
             target=self._worker_loop,
             name="seq-log-sender",
@@ -192,21 +271,18 @@ class SeqJsonHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         """Форматирует запись и ставит её в очередь без сетевого I/O."""
-        if self._closed:
+        if self._closing.is_set():
             return
         try:
-            if time.time() < self._circuit_open_until:
-                self._dropped_count += 1
+            if self._is_circuit_open():
+                self._increment_dropped(1)
                 return
             msg = self.format(record)
             self._queue.put_nowait(msg)
         except queue.Full:
-            self._dropped_count += 1
-            if self._dropped_count == 1 or self._dropped_count % 100 == 0:
-                self._logger.warning(
-                    "Seq queue full, dropped %d events",
-                    self._dropped_count,
-                )
+            dropped = self._increment_dropped(1)
+            if dropped == 1 or dropped % 100 == 0:
+                self._logger.warning("Seq queue full, dropped %d events", dropped)
         except (ValueError, TypeError, AttributeError) as e:
             self._logger.error("Error formatting record: %s", e, exc_info=True)
             self.handleError(record)
@@ -220,20 +296,20 @@ class SeqJsonHandler(logging.Handler):
 
     def flush(self) -> None:
         """Дожидается опустошения очереди (без остановки воркера)."""
-        if self._closed:
+        if self._closing.is_set():
             return
         # Воркер сам отправит накопленное по интервалу/размеру.
         # Здесь ждём, пока очередь опустеет, с таймаутом.
-        deadline = time.time() + SEQ_WORKER_JOIN_TIMEOUT
-        while not self._queue.empty() and time.time() < deadline:
+        deadline = time.monotonic() + SEQ_WORKER_JOIN_TIMEOUT
+        while not self._queue.empty() and time.monotonic() < deadline:
             time.sleep(0.05)
 
     def close(self) -> None:
         """Останавливает воркер и отправляет оставшиеся события."""
-        if self._closed:
+        if self._closing.is_set():
             super().close()
             return
-        self._closed = True
+        self._closing.set()
         try:
             try:
                 self._queue.put(_SEQ_STOP, timeout=1.0)
@@ -255,16 +331,18 @@ class SeqJsonHandler(logging.Handler):
     def _worker_loop(self) -> None:
         """Фоновый цикл: накопление батча и отправка в Seq."""
         batch: list[str] = []
-        last_flush = time.time()
+        last_flush = time.monotonic()
         while True:
-            timeout = max(0.05, self.auto_flush_interval - (time.time() - last_flush))
+            timeout = max(
+                0.05, self.auto_flush_interval - (time.monotonic() - last_flush)
+            )
             try:
                 item = self._queue.get(timeout=timeout)
             except queue.Empty:
                 if batch:
                     self._send_batch(batch)
                     batch = []
-                    last_flush = time.time()
+                    last_flush = time.monotonic()
                 continue
 
             if item is _SEQ_STOP:
@@ -290,34 +368,18 @@ class SeqJsonHandler(logging.Handler):
             if len(batch) >= self.batch_size:
                 self._send_batch(batch)
                 batch = []
-                last_flush = time.time()
+                last_flush = time.monotonic()
 
     def _send_batch(self, batch: list[str]) -> None:
         """Отправляет пачку событий в Seq. Вызывается только из воркера."""
         if not batch:
             return
 
-        if time.time() < self._circuit_open_until:
-            self._dropped_count += len(batch)
+        if self._is_circuit_open():
+            self._increment_dropped(len(batch))
             return
 
-        events: list[dict[str, Any]] = []
-        for event_str in batch:
-            try:
-                event = json.loads(event_str)
-                if "Timestamp" in event and "MessageTemplate" in event:
-                    events.append(event)
-                else:
-                    self._logger.warning(
-                        "Invalid Seq event skipped: %s", event_str[:100]
-                    )
-            except json.JSONDecodeError:
-                self._logger.error(
-                    "JSON parse error for Seq event: %s",
-                    event_str[:100],
-                    exc_info=True,
-                )
-
+        events = self._parse_events(batch)
         if not events:
             return
 
@@ -325,48 +387,126 @@ class SeqJsonHandler(logging.Handler):
         if self.api_key:
             headers["X-Seq-ApiKey"] = self.api_key
 
-        try:
-            response = requests.post(
-                f"{self.server_url}/api/events/raw",
-                json={"Events": events},
-                headers=headers,
-                timeout=SEQ_TIMEOUT,
-            )
-            response.raise_for_status()
-            self._fail_count = 0
-            self._circuit_open_until = 0.0
-        except RequestException as e:
-            self._fail_count += 1
-            # Без exc_info: иначе urllib3-stack смешивается с queue.Empty воркера.
-            self._logger.error("Network error sending to Seq: %s", e)
-            self._open_circuit_if_needed()
-        except (ValueError, TypeError) as e:
-            self._fail_count += 1
-            self._logger.error("Data error sending to Seq: %s", e)
-            self._open_circuit_if_needed()
-        except Exception as e:
-            self._fail_count += 1
-            self._logger.error(
-                "Unexpected error sending to Seq: %s",
-                e,
-                exc_info=True,
-            )
-            self._open_circuit_if_needed()
+        last_error = ""
+        for attempt in range(SEQ_MAX_RETRIES + 1):
+            retry_after: float | None = None
+            try:
+                response = requests.post(
+                    f"{self.server_url}/api/events/raw",
+                    json={"Events": events},
+                    headers=headers,
+                    timeout=SEQ_TIMEOUT,
+                )
+            except (RequestsConnectionError, Timeout) as e:
+                last_error = f"network error: {e}"
+            except RequestException as e:
+                # Ошибка формирования запроса — повтор не поможет.
+                self._logger.error("Request error sending to Seq: %s", e)
+                self._register_failure(len(events))
+                return
+            except (ValueError, TypeError) as e:
+                self._logger.error("Data error sending to Seq: %s", e)
+                self._register_failure(len(events))
+                return
+            except Exception as e:
+                self._logger.error(
+                    "Unexpected error sending to Seq: %s", e, exc_info=True
+                )
+                self._register_failure(len(events))
+                return
+            else:
+                if response.status_code < 400:
+                    self._register_success()
+                    return
+                last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                if response.status_code not in SEQ_RETRYABLE_STATUS_CODES:
+                    self._logger.error("Seq rejected events batch: %s", last_error)
+                    self._register_failure(len(events))
+                    return
+                retry_after = _parse_retry_after(response.headers.get("Retry-After"))
 
-    def _open_circuit_if_needed(self) -> None:
-        """Открывает circuit breaker после серии ошибок отправки."""
+            if attempt == SEQ_MAX_RETRIES:
+                break
+            delay = min(
+                retry_after
+                if retry_after is not None
+                else SEQ_RETRY_BASE_DELAY_SECONDS * 2**attempt,
+                SEQ_RETRY_MAX_DELAY_SECONDS,
+            )
+            # При остановке не ждём: wait вернёт True и повторы прекратятся.
+            if self._closing.wait(delay):
+                break
+
+        # Без exc_info: иначе urllib3-stack смешивается с queue.Empty воркера.
+        self._logger.error(
+            "Failed to send %d events to Seq: %s", len(events), last_error
+        )
+        self._register_failure(len(events))
+
+    def _parse_events(self, batch: list[str]) -> list[dict[str, Any]]:
+        """Разбирает отформатированные события и отбрасывает некорректные."""
+        events: list[dict[str, Any]] = []
+        for event_str in batch:
+            try:
+                event = json.loads(event_str)
+            except json.JSONDecodeError:
+                self._logger.error(
+                    "JSON parse error for Seq event: %s",
+                    event_str[:100],
+                    exc_info=True,
+                )
+                continue
+            if "Timestamp" in event and "MessageTemplate" in event:
+                events.append(event)
+            else:
+                self._logger.warning("Invalid Seq event skipped: %s", event_str[:100])
+        return events
+
+    def _is_circuit_open(self) -> bool:
+        """True, пока circuit breaker запрещает отправку."""
+        return time.monotonic() < self._circuit_open_until
+
+    def _increment_dropped(self, count: int) -> int:
+        """Потокобезопасно увеличивает счётчик потерянных событий."""
+        with self._stats_lock:
+            self._dropped_count += count
+            return self._dropped_count
+
+    def _register_success(self) -> None:
+        """Сбрасывает счётчики ошибок после успешной отправки."""
+        self._fail_count = 0
+        self._circuit_trips = 0
+        self._circuit_open_until = 0.0
+
+    def _register_failure(self, lost_events: int) -> None:
+        """
+        Учитывает потерянную пачку и открывает circuit breaker
+        с экспоненциально растущим временем после серии ошибок.
+        """
+        self._increment_dropped(lost_events)
+        self._fail_count += 1
         if self._fail_count < SEQ_MAX_FAILURES:
             return
-        self._circuit_open_until = time.time() + SEQ_CIRCUIT_COOLDOWN_SECONDS
+        cooldown = min(
+            SEQ_CIRCUIT_COOLDOWN_SECONDS * 2**self._circuit_trips,
+            SEQ_CIRCUIT_MAX_COOLDOWN_SECONDS,
+        )
+        self._circuit_trips += 1
+        self._circuit_open_until = time.monotonic() + cooldown
         self._logger.warning(
             "Seq circuit open for %.0fs after %d failures",
-            SEQ_CIRCUIT_COOLDOWN_SECONDS,
+            cooldown,
             self._fail_count,
         )
         self._fail_count = 0
 
 
 # ===== Форматтер для Seq (Raw Events JSON) =====
+def escape_message_template(message: str) -> str:
+    """Экранирует фигурные скобки, чтобы Seq не принял их за плейсхолдеры."""
+    return message.replace("{", "{{").replace("}", "}}")
+
+
 class SeqClefFormatter(logging.Formatter):
     """
     Форматтер событий Seq для endpoint ``/api/events/raw``.
@@ -394,7 +534,7 @@ class SeqClefFormatter(logging.Formatter):
             return json.dumps(
                 {
                     "Timestamp": self.formatTime(record),
-                    "MessageTemplate": str(record.getMessage()),
+                    "MessageTemplate": escape_message_template(str(record.msg)),
                     "Level": "ERROR",
                     "Properties": {
                         "RenderingError": str(e),
@@ -410,7 +550,7 @@ class SeqClefFormatter(logging.Formatter):
         # Обязательные поля CLEF
         event: dict[str, Any] = {
             "Timestamp": self.formatTime(record),  # @t
-            "MessageTemplate": str(record.getMessage()),  # @mt
+            "MessageTemplate": escape_message_template(record.getMessage()),  # @mt
             "Level": record.levelname,
         }
 
@@ -462,21 +602,55 @@ class SeqClefFormatter(logging.Formatter):
 # ===== Фильтр контекста, caller info и маскирования =====
 class CallerInfoFilter(logging.Filter):
     """
-    Добавляет module_name/method_name из LogRecord, поля корреляции
-    из ContextVar и маскирует секреты в extra.
+    Добавляет module_name/class_name/method_name, поля корреляции
+    из ContextVar, имя сервиса и окружения, маскирует секреты.
 
-    Не вызывает inspect.stack(). class_name берётся из extra или контекста.
-    Фильтр вешается на root-логгер один раз.
+    Вешается на каждый хендлер: фильтры логгера не применяются к записям,
+    пришедшим от дочерних логгеров через propagate. Повторный проход
+    по той же записи (несколько хендлеров) идемпотентен.
+
+    class_name определяется по приоритету: extra → класс из ``co_qualname``
+    (см. SafeExtraLogger.findCaller) → ``bind_class`` из контекста.
     """
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        if not getattr(record, "module_name", None):
-            record.module_name = record.pathname or ""
-        if not getattr(record, "method_name", None):
-            record.method_name = record.funcName or ""
-        if not getattr(record, "class_name", None):
-            record.class_name = get_class_name() or ""
+    def __init__(
+        self,
+        service_name: str | None = None,
+        environment: str | None = None,
+    ) -> None:
+        """
+        Args:
+            service_name: Имя сервиса (поле ``service`` в каждой записи).
+            environment: Окружение (поле ``environment`` в каждой записи).
+        """
+        super().__init__()
+        self._service_name = service_name
+        self._environment = environment
 
+    # ----- Публичные методы -----
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        self._add_caller_info(record)
+        self._add_correlation_ids(record)
+        self._add_service_info(record)
+        self._redact_extra(record)
+        self._redact_message(record)
+        return True
+
+    # ----- Приватные методы -----
+
+    def _add_caller_info(self, record: logging.LogRecord) -> None:
+        """Заполняет module_name, class_name, method_name (None, если нет)."""
+        if not getattr(record, "module_name", None):
+            record.module_name = record.pathname or None
+        owner, function_name = split_qualname(record.funcName or "")
+        if not getattr(record, "method_name", None):
+            record.method_name = function_name or None
+        if not getattr(record, "class_name", None):
+            record.class_name = owner or get_class_name()
+
+    def _add_correlation_ids(self, record: logging.LogRecord) -> None:
+        """Добавляет request_id, correlation_id, run_id, job_name из контекста."""
         request_id = getattr(record, "request_id", None) or get_request_id()
         if request_id:
             record.request_id = request_id
@@ -491,6 +665,15 @@ class CallerInfoFilter(logging.Filter):
         if job_name:
             record.job_name = job_name
 
+    def _add_service_info(self, record: logging.LogRecord) -> None:
+        """Добавляет имя сервиса и окружения, если они заданы."""
+        if self._service_name and not getattr(record, "service", None):
+            record.service = self._service_name
+        if self._environment and not getattr(record, "environment", None):
+            record.environment = self._environment
+
+    def _redact_extra(self, record: logging.LogRecord) -> None:
+        """Маскирует секреты в полях extra."""
         for key, value in list(record.__dict__.items()):
             if key in SYSTEM_FIELDS:
                 continue
@@ -500,68 +683,74 @@ class CallerInfoFilter(logging.Filter):
                 setattr(record, key, redact_key_value(key, value))
             elif isinstance(value, dict | list | tuple):
                 setattr(record, key, redact_log_value(key, value))
-        if isinstance(record.msg, str):
+
+    def _redact_message(self, record: logging.LogRecord) -> None:
+        """
+        Маскирует секреты в итоговом тексте сообщения (после подстановки
+        args), чтобы токены из аргументов ``%s`` тоже не утекали.
+        """
+        if not isinstance(record.msg, str):
+            return
+        try:
+            message = record.getMessage()
+        except (TypeError, ValueError):
+            # Некорректные args — оставляем stdlib сообщить об ошибке при format.
             record.msg = redact_text(record.msg)
-        return True
+            return
+        redacted = redact_text(message)
+        if redacted != message:
+            record.msg = redacted
+            record.args = None
 
 
 # ===== Форматтер для консоли и файла =====
-json_formatter = JsonFormatter(
-    fmt=(
-        "%(asctime)s %(levelname)s %(name)s %(module_name)s %(class_name)s "
-        "%(method_name)s %(message)s"
-    ),
-    datefmt="%Y-%m-%dT%H:%M:%S",
-    json_encoder=None,
-)
+class UtcJsonFormatter(JsonFormatter):
+    """JSON-форматтер с asctime в ISO 8601 и явной зоной UTC."""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        """Возвращает время записи вида ``2026-05-11T17:06:48+00:00``."""
+        return datetime.fromtimestamp(record.created, tz=UTC).isoformat(
+            timespec="seconds"
+        )
+
+
+def create_json_formatter() -> UtcJsonFormatter:
+    """Создаёт единый JSON-форматтер для консоли, файла и uvicorn."""
+    return UtcJsonFormatter(
+        JSON_LOG_FORMAT,
+        json_ensure_ascii=False,
+        # Обязательные поля из fmt выводятся всегда, остальные системные — нет.
+        reserved_attrs=sorted(SYSTEM_FIELDS),
+    )
 
 
 # ===== Конфигурация логирования (dictConfig) =====
-def _build_logging_config(log_level: str | LogLevel) -> dict[str, Any]:
+def _build_logging_config(
+    log_level: str | LogLevel,
+    *,
+    service_name: str | None = None,
+    environment: str | None = None,
+) -> dict[str, Any]:
     """Собирает dictConfig с уровнем из настроек сервиса."""
     level = str(log_level)
     return {
         "version": 1,
         "disable_existing_loggers": False,
         "filters": {
-            "caller_info": {"()": CallerInfoFilter},
+            "caller_info": {
+                "()": CallerInfoFilter,
+                "service_name": service_name,
+                "environment": environment,
+            },
         },
         "formatters": {
-            "json": {
-                "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
-                "fmt": (
-                    "%(asctime)s %(levelname)s %(name)s %(module_name)s "
-                    "%(class_name)s %(method_name)s %(message)s"
-                ),
-                "datefmt": "%Y-%m-%dT%H:%M:%S",
-            },
-            "default": {
-                "()": "uvicorn.logging.DefaultFormatter",
-                "fmt": "%(levelprefix)s %(message)s",
-                "use_colors": None,
-            },
-            "access": {
-                "()": "uvicorn.logging.AccessFormatter",
-                "fmt": (
-                    "%(levelprefix)s %(client_addr)s - "
-                    "'%(request_line)s' %(status_code)s"
-                ),
-            },
+            "json": {"()": create_json_formatter},
         },
         "handlers": {
             "console": {
                 "class": "logging.StreamHandler",
                 "formatter": "json",
-                "stream": "ext://sys.stdout",
-            },
-            "default": {
-                "class": "logging.StreamHandler",
-                "formatter": "default",
-                "stream": "ext://sys.stdout",
-            },
-            "access": {
-                "class": "logging.StreamHandler",
-                "formatter": "access",
+                "filters": ["caller_info"],
                 "stream": "ext://sys.stdout",
             },
         },
@@ -570,16 +759,17 @@ def _build_logging_config(log_level: str | LogLevel) -> dict[str, Any]:
                 "handlers": ["console"],
                 "level": level,
                 "propagate": True,
-                "filters": ["caller_info"],
             },
+            # Ошибки uvicorn идут в root: консоль, файл и Seq.
             "uvicorn.error": {
                 "level": level,
-                "handlers": ["default"],
-                "propagate": False,
+                "handlers": [],
+                "propagate": True,
             },
+            # Access-лог только в консоль (JSON): в Seq запросы пишет nginx.
             "uvicorn.access": {
                 "level": level,
-                "handlers": ["access"],
+                "handlers": ["console"],
                 "propagate": False,
             },
         },
@@ -601,7 +791,7 @@ def _create_file_handler(app_settings: AppSettings) -> RotatingFileHandler | Non
             ),
             encoding="utf-8",
         )
-        handler.setFormatter(json_formatter)
+        handler.setFormatter(create_json_formatter())
         handler.setLevel(app_settings.log_level)
     except (OSError, PermissionError, ValueError) as e:
         logging.getLogger(__name__).error(
@@ -654,9 +844,13 @@ def _create_seq_handler(seq_settings: SeqSettings) -> logging.Handler | None:
 def patch_logging_handlers(
     app_settings: AppSettings,
     seq_settings: SeqSettings,
+    *,
+    service_name: str | None = None,
 ) -> None:
     """
     Добавляет файловый и Seq хендлеры к корневому логгеру (без дублирования).
+
+    Каждый хендлер получает собственный CallerInfoFilter.
     """
     root = logging.getLogger()
 
@@ -673,6 +867,9 @@ def patch_logging_handlers(
         if not already_has_file:
             file_handler = _create_file_handler(app_settings)
             if file_handler:
+                file_handler.addFilter(
+                    CallerInfoFilter(service_name, seq_settings.environment)
+                )
                 root.addHandler(file_handler)
                 file_enabled = True
 
@@ -682,6 +879,9 @@ def patch_logging_handlers(
         if not already_has_seq:
             seq_handler = _create_seq_handler(seq_settings)
             if seq_handler:
+                seq_handler.addFilter(
+                    CallerInfoFilter(service_name, seq_settings.environment)
+                )
                 root.addHandler(seq_handler)
                 seq_enabled = True
                 seq_url = seq_settings.url
@@ -716,16 +916,19 @@ def _shutdown_logging() -> None:
     for handler in list(root.handlers):
         try:
             handler.flush()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
             handler.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            # Логирование уже останавливается — сообщаем напрямую в stderr
+            # и продолжаем закрывать остальные хендлеры.
+            sys.stderr.write(f"Failed to close log handler {handler!r}: {e!r}\n")
     logging.shutdown()
 
 
-def configure_logging(*, env_file: str | Path | None = None) -> None:
+def configure_logging(
+    *,
+    env_file: str | Path | None = None,
+    service_name: str | None = None,
+) -> None:
     """
     Инициализирует логирование из APP_* / SEQ_* (process env и файл сервиса).
 
@@ -735,6 +938,7 @@ def configure_logging(*, env_file: str | Path | None = None) -> None:
     Args:
         env_file: ``.env.price_flow`` / ``.env.converter`` / ``.env.upd_sites``.
             Если None — берётся ENV_FILE или только process env (Docker).
+        service_name: Имя сервиса, добавляется полем ``service`` в каждую запись.
     """
     global _init_done, _app_settings, _seq_settings
     if _init_done:
@@ -744,8 +948,14 @@ def configure_logging(*, env_file: str | Path | None = None) -> None:
     _app_settings = load_prefixed_settings(AppSettings, resolved)
     _seq_settings = load_prefixed_settings(SeqSettings, resolved)
 
-    logging.config.dictConfig(_build_logging_config(_app_settings.log_level))
-    patch_logging_handlers(_app_settings, _seq_settings)
+    logging.config.dictConfig(
+        _build_logging_config(
+            _app_settings.log_level,
+            service_name=service_name,
+            environment=_seq_settings.environment,
+        )
+    )
+    patch_logging_handlers(_app_settings, _seq_settings, service_name=service_name)
 
     sync_logger = logging.getLogger("sync")
     sync_logger.propagate = True

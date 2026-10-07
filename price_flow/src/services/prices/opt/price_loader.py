@@ -50,7 +50,9 @@ class PriceLoader:
         self.blank_url = blank_url
         self.upload_dir = upload_dir
 
-    async def process_price(self) -> tuple[UploadResult, dict[str, Any]]:
+    async def process_price(
+        self, convert: bool = True
+    ) -> tuple[UploadResult, dict[str, Any]]:
         """
         Скачивает xls со страницы Opt и передаёт файл в converter.
 
@@ -77,9 +79,17 @@ class PriceLoader:
                         "file_name": saved_path.name,
                     },
                 )
-                upload_result = await asyncio.to_thread(
-                    self.converter.upload_file, saved_path
+                upload_result = UploadResult(
+                    filename="",
+                    token="",
+                    message="Not need to convert",
+                    success=True,
+                    error="",
                 )
+                if convert:
+                    upload_result = await asyncio.to_thread(
+                        self.converter.upload_file, saved_path
+                    )
             except BaseAppException:
                 logger.warning(
                     "Supplier price processing failed",
@@ -107,6 +117,7 @@ class PriceLoader:
                     "source_url": redact_url(file_url),
                     "file_name": saved_path.name,
                     "converter_success": upload_result.success,
+                    "saved_path": saved_path if not convert else "",
                 }
                 logger.info(
                     "Price processing completed",
@@ -118,7 +129,7 @@ class PriceLoader:
                 )
                 return upload_result, details
             finally:
-                if saved_path is not None and saved_path.exists():
+                if convert and saved_path is not None and saved_path.exists():
                     saved_path.unlink(missing_ok=True)
 
     def _get_page_text(self) -> str:

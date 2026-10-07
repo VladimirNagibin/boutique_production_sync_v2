@@ -61,6 +61,7 @@ repos:
           - redis>=7.0
           - httpx
           - aiofiles
+          - python-json-logger>=4.1.0
 
       - id: mypy
         name: mypy-converter
@@ -86,6 +87,7 @@ repos:
           - redis>=7.0
           - httpx
           - aiofiles
+          - python-json-logger>=4.1.0
 
       - id: mypy
         name: mypy-upd_sites
@@ -111,3 +113,4 @@ repos:
           - redis>=7.0
           - httpx
           - aiofiles
+          - python-json-logger>=4.1.0

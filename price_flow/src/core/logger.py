@@ -7,7 +7,10 @@ from common.settings import discover_env_file
 
 SERVICE_NAME = "price_flow"
 
-configure_logging(env_file=discover_env_file(".env.price_flow"))
+configure_logging(
+    env_file=discover_env_file(".env.price_flow"),
+    service_name=SERVICE_NAME,
+)
 
 
 def get_logger(module_name: str) -> logging.Logger:

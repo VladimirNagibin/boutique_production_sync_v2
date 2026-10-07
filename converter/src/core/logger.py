@@ -18,7 +18,10 @@ os.environ.setdefault(
     str(settings.APP_LOGGING_FILE_MAX_BYTES),
 )
 
-configure_logging(env_file=discover_env_file(".env.converter"))
+configure_logging(
+    env_file=discover_env_file(".env.converter"),
+    service_name=SERVICE_NAME,
+)
 
 
 def get_logger(module_name: str) -> logging.Logger:

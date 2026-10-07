@@ -10,6 +10,7 @@ _SAFE_KEYS = frozenset(
     {
         "class_name",
         "correlation_id",
+        "environment",
         "file_id",
         "file_name",
         "job_name",
@@ -18,6 +19,7 @@ _SAFE_KEYS = frozenset(
         "original_file_name",
         "request_id",
         "run_id",
+        "service",
         "stage",
         "token_name",
     }
