@@ -7,6 +7,7 @@ from core.logger import get_logger
 from schemas.v1.entity import UpdFilesDropbox
 from services.dropbox_ import DropboxService, get_dropbox
 
+
 logger = get_logger(__name__)
 dropbox_router = APIRouter(dependencies=[Depends(verify_api_key)])
 
@@ -72,3 +73,23 @@ def upd_portal_dropbox(
         },
     )
     return [UpdFilesDropbox(**order) for order in result]
+
+
+@dropbox_router.get(
+    "/upd_portal_dropbox_",
+    summary="update portal dropbox",
+    description="Update prices in dropbox.",
+)
+def upd_portal_dropbox_(
+    response: Response,
+    dropbox_service: DropboxService = Depends(get_dropbox),
+    # state: State = Depends(get_storage),
+) -> list[UpdFilesDropbox]:
+    return [
+        UpdFilesDropbox(
+            filename="str", load=True, del_dropbox=True, del_lockal=True
+        ),
+        UpdFilesDropbox(
+            filename="str2", load=True, del_dropbox=True, del_lockal=False
+        ),
+    ]
