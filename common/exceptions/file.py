@@ -146,6 +146,36 @@ class ZipExtractionError(FileSystemError):
         )
 
 
+class GzipExtractionError(FileSystemError):
+    """Исключение, возникающее при ошибке распаковки GZIP-архива."""
+
+    DEFAULT_MESSAGE = "Failed to extract GZIP archive"
+
+    def __init__(
+        self,
+        path: Path | str,
+        message: str | None = None,
+        details: Any | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        """
+        Инициализирует GzipExtractionError.
+
+        Args:
+            path: Путь к GZIP-архиву
+            message: Сообщение об ошибке
+            details: Дополнительные детали
+            status_code: HTTP статус-код
+        """
+        super().__init__(
+            path=path,
+            error_code=ErrorCode.GZIP_EXTRACTION_ERROR,
+            message=message or self.DEFAULT_MESSAGE,
+            details=details,
+            status_code=status_code,
+        )
+
+
 class FileTooLargeError(FileSystemError):
     """
     Исключение, возникающее когда размер файла превышает допустимый лимит.
@@ -251,6 +281,36 @@ class CsvParsingError(FileSystemError):
         super().__init__(
             path=path,
             error_code=ErrorCode.CSV_FILE_PARSING_ERROR,
+            message=message or self.DEFAULT_MESSAGE,
+            details=details,
+            status_code=status_code,
+        )
+
+
+class JsonParsingError(FileSystemError):
+    """Исключение, возникающее при ошибке парсинга JSON-файла."""
+
+    DEFAULT_MESSAGE = "Failed to parse JSON file"
+
+    def __init__(
+        self,
+        path: Path | str,
+        message: str | None = None,
+        details: Any | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        """
+        Инициализирует JsonParsingError.
+
+        Args:
+            path: Путь к JSON-файлу
+            message: Сообщение об ошибке
+            details: Дополнительные детали
+            status_code: HTTP статус-код
+        """
+        super().__init__(
+            path=path,
+            error_code=ErrorCode.JSON_FILE_PARSING_ERROR,
             message=message or self.DEFAULT_MESSAGE,
             details=details,
             status_code=status_code,
