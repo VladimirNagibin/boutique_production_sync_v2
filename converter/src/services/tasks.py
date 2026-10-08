@@ -1,5 +1,6 @@
 import asyncio
 import os
+import secrets
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -8,6 +9,8 @@ import aiofiles.os as aios
 from redis import exceptions as redis_errors
 from redis.asyncio.client import PubSub
 
+from common.exceptions.base import BaseAppException
+from common.exceptions.file import FileAppNotFoundError
 from common.log_context import log_run
 from core.logger import get_logger
 from core.settings import settings
@@ -18,6 +21,20 @@ from services.converter_files import convert_xlsx_to_xls
 logger = get_logger(__name__)
 
 CORR_KEY_PREFIX = "corr:"
+
+CONVERSION_MAX_ATTEMPTS: int = 3
+RECONNECT_MAX_ATTEMPTS: int = 5
+RETRY_BASE_DELAY_SECONDS: float = 1.0
+RETRY_MAX_DELAY_SECONDS: float = 60.0
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Возвращает экспоненциальную задержку с jitter для попытки attempt."""
+    delay = min(
+        RETRY_BASE_DELAY_SECONDS * (2.0**attempt),
+        RETRY_MAX_DELAY_SECONDS,
+    )
+    return float(delay * (0.5 + secrets.randbelow(1000) / 2000))
 
 
 async def delete_file_async(file_path: str) -> None:
@@ -33,7 +50,7 @@ async def delete_file_async(file_path: str) -> None:
     except asyncio.CancelledError:
         logger.info("File deletion cancelled", extra={"file_name": file_name})
         raise
-    except Exception:
+    except OSError:
         logger.exception(
             "File deletion failed", extra={"file_name": file_name}
         )
@@ -51,95 +68,193 @@ async def _load_correlation_id(
     return str(raw)
 
 
+async def _process_event(
+    redis_client: RedisClient, message: dict[str, Any]
+) -> None:
+    """Обрабатывает одно событие Redis pubsub."""
+    try:
+        channel = message["channel"].decode("utf-8")
+        key = message["data"].decode("utf-8")
+    except (KeyError, AttributeError, UnicodeDecodeError):
+        logger.warning(
+            "Malformed Redis pubsub message",
+            extra={"component": "redis_listener"},
+        )
+        return
+
+    if key.startswith(CORR_KEY_PREFIX):
+        return
+
+    in_path = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "in", key)
+    out_path = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "out", key)
+
+    if channel == "__keyevent@0__:set":
+        value = await redis_client.get(name=key)
+        if value and int(value.decode("utf-8")) == settings.LOAD:
+            correlation_id = await _load_correlation_id(redis_client, key)
+            with log_run("convert", request_id=correlation_id):
+                logger.info(
+                    "Conversion event received",
+                    extra={"file_id": key},
+                )
+                await _convert_with_retry(redis_client, key, in_path)
+
+    elif channel == "__keyevent@0__:expired":
+        logger.debug("Converted file expired", extra={"file_id": key})
+        await delete_file_async(out_path)
+
+
+async def _convert_with_retry(
+    redis_client: RedisClient, file_id: str, in_path: str
+) -> None:
+    """Конвертирует файл с ретраями и экспоненциальным backoff.
+
+    Постоянные ошибки (отсутствие входного файла) сразу помечаются как
+    FAILED. Временные ошибки ретраятся, после исчерпания попыток файл
+    помечается как FAILED с коротким TTL для последующей очистки.
+    """
+    for attempt in range(CONVERSION_MAX_ATTEMPTS):
+        try:
+            await convert_xlsx_to_xls(file_id)
+            await redis_client.set(
+                name=file_id, value=settings.CONVERTED, ex=settings.TTL
+            )
+            await delete_file_async(in_path)
+            return
+        except asyncio.CancelledError:
+            raise
+        except FileAppNotFoundError:
+            logger.error(
+                "Conversion input file not found",
+                extra={"file_id": file_id},
+            )
+            await _mark_failed(redis_client, file_id)
+            return
+        except BaseAppException as error:
+            logger.error(
+                "Conversion attempt failed",
+                extra={
+                    "file_id": file_id,
+                    "attempt": attempt + 1,
+                    "error_type": type(error).__name__,
+                },
+            )
+            if attempt < CONVERSION_MAX_ATTEMPTS - 1:
+                await asyncio.sleep(_backoff_delay(attempt))
+
+    logger.error(
+        "Conversion failed after retries",
+        extra={"file_id": file_id, "attempts": CONVERSION_MAX_ATTEMPTS},
+    )
+    await _mark_failed(redis_client, file_id)
+
+
+async def _mark_failed(redis_client: RedisClient, file_id: str) -> None:
+    """Помечает файл как FAILED с коротким TTL."""
+    await redis_client.set(
+        name=file_id, value=settings.FAILED, ex=settings.FAILED_TTL
+    )
+
+
 async def listen_to_redis_events() -> None:
-    """Слушает события Redis и запускает конвертацию файлов."""
-    pubsub: PubSub | None = None
+    """Слушает события Redis и запускает конвертацию файлов.
+
+    При обрыве соединения переподписывается с экспоненциальным backoff,
+    после исчерпания попыток завершает работу.
+    """
     redis_client: RedisClient = await get_redis()
-    if not redis_client.redis:
+    connection = redis_client.redis
+    if connection is None:
         logger.error(
             "Redis connection unavailable for event listener",
             extra={"component": "redis_listener"},
         )
         return
 
+    reconnect_attempt = 0
+    pubsub: PubSub | None = None
+
     try:
-        pubsub = redis_client.redis.pubsub()
-        if not pubsub:
-            logger.error(
-                "Redis pubsub unavailable for event listener",
-                extra={"component": "redis_listener"},
-            )
-            return
-        await pubsub.psubscribe("__keyevent@0__:set", "__keyevent@0__:expired")
-        logger.info(
-            "Redis event listener started",
-            extra={"component": "redis_listener"},
-        )
-
-        async for message in pubsub.listen():
+        while True:
             try:
-                if message["type"] == "pmessage":
-                    channel = message["channel"].decode("utf-8")
-                    key = message["data"].decode("utf-8")
-                    if key.startswith(CORR_KEY_PREFIX):
+                pubsub = connection.pubsub()
+                await pubsub.psubscribe(
+                    "__keyevent@0__:set", "__keyevent@0__:expired"
+                )
+                logger.info(
+                    "Redis event listener started",
+                    extra={"component": "redis_listener"},
+                )
+                reconnect_attempt = 0
+
+                async for message in pubsub.listen():
+                    if message["type"] != "pmessage":
                         continue
-
-                    in_path = os.path.join(
-                        settings.BASE_DIR, settings.UPLOAD_DIR, "in", key
-                    )
-                    out_path = os.path.join(
-                        settings.BASE_DIR, settings.UPLOAD_DIR, "out", key
-                    )
-
-                    if channel == "__keyevent@0__:set":
-                        value = await redis_client.get(name=key)
-                        if (
-                            value
-                            and int(value.decode("utf-8")) == settings.LOAD
-                        ):
-                            correlation_id = await _load_correlation_id(
-                                redis_client, key
-                            )
-                            with log_run("convert", request_id=correlation_id):
-                                logger.info(
-                                    "Conversion event received",
-                                    extra={"file_id": key},
-                                )
-                                converted = await convert_xlsx_to_xls(key)
-                                if not converted:
-                                    logger.warning(
-                                        "Conversion failed, "
-                                        "status left as LOAD",
-                                        extra={"file_id": key},
-                                    )
-                                    continue
-                                await redis_client.set(
-                                    name=key,
-                                    value=settings.CONVERTED,
-                                    ex=settings.TTL,
-                                )
-                                await delete_file_async(in_path)
-
-                    elif channel == "__keyevent@0__:expired":
-                        logger.debug(
-                            "Converted file expired",
-                            extra={"file_id": key},
+                    try:
+                        await _process_event(redis_client, message)
+                    except asyncio.CancelledError:
+                        raise
+                    except (
+                        redis_errors.ConnectionError,
+                        redis_errors.TimeoutError,
+                    ):
+                        raise
+                    except Exception:
+                        logger.exception(
+                            "Redis event processing failed",
+                            extra={"component": "redis_listener"},
                         )
-                        await delete_file_async(out_path)
-            except redis_errors.ConnectionError as error:
+
+            except asyncio.CancelledError:
+                raise
+            except (
+                redis_errors.ConnectionError,
+                redis_errors.TimeoutError,
+            ) as error:
+                reconnect_attempt += 1
+                if reconnect_attempt > RECONNECT_MAX_ATTEMPTS:
+                    logger.error(
+                        "Redis listener reconnect attempts exhausted",
+                        extra={
+                            "component": "redis_listener",
+                            "error_type": type(error).__name__,
+                        },
+                    )
+                    return
+                delay = _backoff_delay(reconnect_attempt - 1)
                 logger.error(
-                    "Redis connection lost while processing event",
+                    "Redis connection lost, reconnecting",
                     extra={
                         "component": "redis_listener",
                         "error_type": type(error).__name__,
+                        "reconnect_attempt": reconnect_attempt,
+                        "backoff_seconds": round(delay, 2),
                     },
                 )
-                return
-            except Exception:
-                logger.exception(
-                    "Redis event processing failed",
-                    extra={"component": "redis_listener"},
-                )
+                await asyncio.sleep(delay)
+            finally:
+                if pubsub is not None:
+                    try:
+                        await pubsub.unsubscribe()
+                        await pubsub.close()
+                    except (
+                        redis_errors.ConnectionError,
+                        redis_errors.TimeoutError,
+                    ) as error:
+                        logger.warning(
+                            "Redis connection unavailable during listener "
+                            "cleanup",
+                            extra={
+                                "component": "redis_listener",
+                                "error_type": type(error).__name__,
+                            },
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Redis listener cleanup failed",
+                            extra={"component": "redis_listener"},
+                        )
+                    pubsub = None
 
     except asyncio.CancelledError:
         logger.info(
@@ -147,34 +262,6 @@ async def listen_to_redis_events() -> None:
             extra={"component": "redis_listener"},
         )
         raise
-
-    except redis_errors.ConnectionError as error:
-        logger.error(
-            "Redis connection unavailable for event listener",
-            extra={
-                "component": "redis_listener",
-                "error_type": type(error).__name__,
-            },
-        )
-
-    finally:
-        if pubsub is not None:
-            try:
-                await pubsub.unsubscribe()
-                await pubsub.close()
-            except redis_errors.ConnectionError as error:
-                logger.warning(
-                    "Redis connection unavailable during listener cleanup",
-                    extra={
-                        "component": "redis_listener",
-                        "error_type": type(error).__name__,
-                    },
-                )
-            except Exception:
-                logger.exception(
-                    "Redis listener cleanup failed",
-                    extra={"component": "redis_listener"},
-                )
 
 
 async def delete_files_by_condition(
@@ -231,7 +318,7 @@ async def delete_files_by_condition(
             },
         )
         raise
-    except redis_errors.ConnectionError as error:
+    except (redis_errors.ConnectionError, redis_errors.TimeoutError) as error:
         logger.error(
             "Redis connection unavailable during file cleanup",
             extra={
@@ -241,7 +328,7 @@ async def delete_files_by_condition(
                 "error_type": type(error).__name__,
             },
         )
-    except Exception:
+    except OSError:
         logger.exception(
             "File cleanup directory failed",
             extra={
@@ -258,6 +345,13 @@ async def clear_files() -> None:
         started_at = time.perf_counter()
         logger.info("Scheduled file cleanup started")
         redis: RedisClient = await get_redis()
+        if redis.redis is None:
+            logger.error(
+                "Scheduled file cleanup aborted: Redis unavailable",
+                extra={"duration_seconds": time.perf_counter() - started_at},
+            )
+            return
+
         in_dir = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "in")
         out_dir = os.path.join(settings.BASE_DIR, settings.UPLOAD_DIR, "out")
 

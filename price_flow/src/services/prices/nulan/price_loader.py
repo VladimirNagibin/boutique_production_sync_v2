@@ -528,7 +528,10 @@ class PriceLoader:
                     "file_name": price_filename.name,
                 },
             )
-            upload_result = self.converter.upload_file(price_filename)
+            upload_result = await asyncio.to_thread(
+                self.converter.upload_file, price_filename
+            )
+            self._ensure_converter_success(upload_result, price_filename)
         except (
             # FileSizeError,
             ZipExtractionError,
@@ -580,6 +583,22 @@ class PriceLoader:
         if not upload_response.details:
             error_message = "File not uploaded"
             raise FileUploadError(error_message)
+
+    @staticmethod
+    def _ensure_converter_success(
+        upload_result: UploadResult, path: Path
+    ) -> None:
+        """Бросает FileUploadError при неудачной загрузке в converter."""
+        if not upload_result.success:
+            message = (
+                f"Converter upload failed: "
+                f"{upload_result.error or 'unknown error'}"
+            )
+            raise FileUploadError(
+                path=path,
+                message=message,
+                details={"error_code": upload_result.error_code},
+            )
 
     async def _unzip_file_async(
         self, zip_path: Path, extract_to: Path
