@@ -20,7 +20,9 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = "pass"  # noqa: S105
     UPLOAD_DIR: str = os.path.join("data", "upload")
     TTL: int = 60 * 60 * 6  # TTL in seconds
+    FAILED_TTL: int = 60 * 30  # TTL для неудачных конвертаций
     CHUNK: int = 1024
+    MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024  # 50 MB
     BASE_DIR: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     APP_LOG_LEVEL: str = Field(
         default="INFO",
@@ -28,6 +30,7 @@ class Settings(BaseSettings):
     )
     LOAD: int = 0
     CONVERTED: int = 1
+    FAILED: int = 2
     APP_LOGGING_FILE_MAX_BYTES: int = Field(
         default=500_000,
         ge=100_000,

@@ -9,7 +9,6 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
-    HTTPException,
     Response,
     UploadFile,
 )
@@ -17,6 +16,15 @@ from fastapi.responses import FileResponse
 from pydantic import UUID4
 from redis import exceptions as redis_errors
 
+from common.exceptions.file import (
+    FileAppNotFoundError,
+    FileTooLargeError,
+    FileUploadError,
+)
+from common.exceptions.redis import (
+    RedisManagerConnectionError,
+    RedisManagerTimeoutError,
+)
 from common.log_context import get_request_id
 from core.logger import get_logger
 from core.settings import settings
@@ -43,21 +51,29 @@ async def upload_file(
     """
     file_name = str(uuid.uuid4())
     byte_count = 0
+    original_file_name = file.filename or "<unnamed>"
     logger.info(
         "File upload started",
         extra={
             "file_id": file_name,
-            "original_file_name": file.filename,
+            "original_file_name": original_file_name,
         },
     )
+    tmp_file_path = os.path.join(
+        settings.BASE_DIR, settings.UPLOAD_DIR, "in", file_name
+    )
     try:
-        tmp_file_path = os.path.join(
-            settings.BASE_DIR, settings.UPLOAD_DIR, "in", file_name
-        )
         async with aiofiles.open(tmp_file_path, "wb") as buffer:
             while chunk := await file.read(settings.CHUNK):
                 await buffer.write(chunk)
                 byte_count += len(chunk)
+                if byte_count > settings.MAX_UPLOAD_BYTES:
+                    raise FileTooLargeError(
+                        path=tmp_file_path,
+                        file_size=byte_count,
+                        max_file_size=settings.MAX_UPLOAD_BYTES,
+                        status_code=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    )
         await redis.set(name=file_name, value=settings.LOAD, ex=settings.TTL)
         correlation_id = get_request_id()
         if correlation_id:
@@ -66,54 +82,82 @@ async def upload_file(
                 value=correlation_id,
                 ex=settings.TTL,
             )
+    except FileTooLargeError:
+        logger.warning(
+            "File upload rejected: size limit exceeded",
+            extra={
+                "file_id": file_name,
+                "original_file_name": original_file_name,
+                "byte_count": byte_count,
+            },
+        )
+        await _cleanup_partial_upload(tmp_file_path, file_name)
+        raise
     except (FileNotFoundError, PermissionError) as error:
         logger.exception(
             "File upload storage failed",
             extra={
                 "file_id": file_name,
-                "original_file_name": file.filename,
+                "original_file_name": original_file_name,
                 "byte_count": byte_count,
             },
         )
-        raise HTTPException(
-            HTTPStatus.INTERNAL_SERVER_ERROR, "File storage error"
+        await _cleanup_partial_upload(tmp_file_path, file_name)
+        raise FileUploadError(
+            path=tmp_file_path,
+            message="File storage error",
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
         ) from error
     except redis_errors.ConnectionError as error:
         logger.error(
             "File upload Redis update failed",
             extra={
                 "file_id": file_name,
-                "original_file_name": file.filename,
+                "original_file_name": original_file_name,
                 "byte_count": byte_count,
                 "error_type": type(error).__name__,
             },
         )
-        raise HTTPException(
-            HTTPStatus.INTERNAL_SERVER_ERROR, "Redis unavailable"
+        await _cleanup_partial_upload(tmp_file_path, file_name)
+        raise RedisManagerConnectionError(
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
         ) from error
-    except Exception as error:
+    except redis_errors.TimeoutError as error:
+        logger.error(
+            "File upload Redis update timed out",
+            extra={
+                "file_id": file_name,
+                "original_file_name": original_file_name,
+                "byte_count": byte_count,
+                "error_type": type(error).__name__,
+            },
+        )
+        await _cleanup_partial_upload(tmp_file_path, file_name)
+        raise RedisManagerTimeoutError(
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+        ) from error
+    except Exception:
         logger.exception(
             "Unexpected file upload failure",
             extra={
                 "file_id": file_name,
-                "original_file_name": file.filename,
+                "original_file_name": original_file_name,
                 "byte_count": byte_count,
             },
         )
-        raise HTTPException(
-            HTTPStatus.INTERNAL_SERVER_ERROR, "Internal server error"
-        ) from error
+        await _cleanup_partial_upload(tmp_file_path, file_name)
+        raise
 
     logger.info(
         "File upload completed",
         extra={
             "file_id": file_name,
-            "original_file_name": file.filename,
+            "original_file_name": original_file_name,
             "byte_count": byte_count,
         },
     )
     return {
-        "filename": file.filename,
+        "filename": original_file_name,
         "token": file_name,
         "message": "Файл успешно загружен",
     }
@@ -154,9 +198,9 @@ async def get_file(
                 "byte_count": 0,
             },
         )
-        raise HTTPException(
+        raise FileAppNotFoundError(
+            path=file_path,
             status_code=HTTPStatus.BAD_REQUEST,
-            detail="File not found",
         )
     stat_result = await aios.stat(file_path)
     logger.info(
@@ -172,3 +216,16 @@ async def get_file(
         filename=download_filename,
         stat_result=stat_result,
     )
+
+
+async def _cleanup_partial_upload(tmp_file_path: str, file_id: str) -> None:
+    """Удаляет частично записанный файл после ошибки загрузки."""
+    try:
+        await aios.remove(tmp_file_path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        logger.exception(
+            "Partial upload cleanup failed",
+            extra={"file_id": file_id, "path": tmp_file_path},
+        )

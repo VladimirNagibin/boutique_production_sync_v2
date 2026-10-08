@@ -11,3 +11,4 @@ class UploadResult(BaseModel):
     message: str
     success: bool
     error: str | None = None
+    error_code: str | None = None

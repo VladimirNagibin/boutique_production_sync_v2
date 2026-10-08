@@ -29,7 +29,7 @@ from common.exceptions.app_exceptions import (
     SupplierDataError,
 )
 from common.exceptions.base import BaseAppException
-from common.exceptions.file import FileAppNotFoundError
+from common.exceptions.file import FileAppNotFoundError, FileUploadError
 from common.log_context import bind_class, log_run
 from common.log_redact import redact_url
 from core.logger import get_logger
@@ -234,8 +234,11 @@ class PriceLoader:
                         "file_name": enriched_file_path.name,
                     },
                 )
-                upload_result = self.file_uploader.upload_file(
-                    enriched_file_path
+                upload_result = await asyncio.to_thread(
+                    self.file_uploader.upload_file, enriched_file_path
+                )
+                self._ensure_converter_success(
+                    upload_result, enriched_file_path
                 )
 
                 # 7. Статистика
@@ -710,6 +713,22 @@ class PriceLoader:
                 # error_code="GOOGLE_DRIVE_FILE_NOT_FOUND",
                 message=f"File '{target_filename}' not found in folder",
                 path=target_filename,
+            )
+
+    @staticmethod
+    def _ensure_converter_success(
+        upload_result: UploadResult, path: Path
+    ) -> None:
+        """Бросает FileUploadError при неудачной загрузке в converter."""
+        if not upload_result.success:
+            message = (
+                f"Converter upload failed: "
+                f"{upload_result.error or 'unknown error'}"
+            )
+            raise FileUploadError(
+                path=path,
+                message=message,
+                details={"error_code": upload_result.error_code},
             )
 
     # ----- Скачивание файла -----

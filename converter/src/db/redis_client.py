@@ -2,7 +2,9 @@ from typing import Any
 
 from redis.asyncio import Redis as AsyncioRedis
 
+from common.exceptions.redis import RedisManagerNotInitializedError
 from core.logger import get_logger
+
 
 logger = get_logger(__name__)
 
@@ -18,34 +20,26 @@ class RedisClient:
 
     async def get(self, name: Any) -> Any:
         connection = self._get_connection("get")
-        if connection is not None:
-            return await connection.get(name)
+        return await connection.get(name)
 
     async def set(self, name: Any, value: Any, ex: int | None = None) -> None:
         connection = self._get_connection("set")
-        if connection is not None:
-            await connection.set(name, value, ex=ex)
+        await connection.set(name, value, ex=ex)
 
     async def delete(self, name: Any) -> None:
         connection = self._get_connection("delete")
-        if connection is not None:
-            await connection.delete(name)
+        await connection.delete(name)
 
-    async def exists(self, name: Any) -> bool | None:
+    async def exists(self, name: Any) -> bool:
         connection = self._get_connection("exists")
-        if connection is not None:
-            return bool(await connection.exists(name))
-        return None
+        return bool(await connection.exists(name))
 
-    async def sadd(self, name: Any, values: Any) -> int | None:
+    async def sadd(self, name: Any, values: Any) -> int:
         connection = self._get_connection("sadd")
-        if connection is not None:
-            result = await connection.sadd(name, values)
-            return int(result)
-        return None
+        return int(await connection.sadd(name, values))
 
-    def _get_connection(self, operation: str) -> AsyncioRedis | None:
-        """Возвращает соединение и однократно логирует его отсутствие."""
+    def _get_connection(self, operation: str) -> AsyncioRedis:
+        """Возвращает соединение либо бросает исключение неинициализации."""
         global _connection_unavailable_logged
 
         if self.redis is None:
@@ -55,7 +49,9 @@ class RedisClient:
                     extra={"operation": operation},
                 )
                 _connection_unavailable_logged = True
-            return None
+            raise RedisManagerNotInitializedError(
+                details={"operation": operation},
+            )
 
         _connection_unavailable_logged = False
         return self.redis
