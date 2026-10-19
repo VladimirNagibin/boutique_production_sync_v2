@@ -165,6 +165,7 @@ class PriceLoader:
                     "Starting supplier price synchronization",
                     extra={"supplier_id": self.supplier_id},
                 )
+                await self._clear_temp_dir()
                 await self._fetch_and_process_directory(self.public_key)
                 await self._parse_files()
                 df = await self.price_repo.fetch_all()
@@ -398,6 +399,30 @@ class PriceLoader:
             },
         )
 
+    async def _clear_temp_dir(self) -> None:
+        """Удаляет старые файлы из временной папки перед синхронизацией."""
+        try:
+            if await aios.path.exists(self.temp_dir):
+                await asyncio.to_thread(shutil.rmtree, self.temp_dir)
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(
+                "Supplier temp directory cleared",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "temp_dir": str(self.temp_dir),
+                },
+            )
+        except OSError as error:
+            logger.error(
+                "Supplier temp directory cleanup failed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "temp_dir": str(self.temp_dir),
+                    "error_type": type(error).__name__,
+                },
+                exc_info=True,
+            )
+
     async def _parse_files(self) -> None:
         clothing_by_name = await self.clothing_codes_repo.get_lookup_by_name(
             self.supplier_id
@@ -419,18 +444,38 @@ class PriceLoader:
                 "product_category_count": len(categories_by_code),
             },
         )
+        processed_count = 0
+        skipped_files: list[str] = []
         for _, file in FILENAME_MAPPING.items():
+            file_path = self.temp_dir / file
+            if not await aios.path.exists(file_path):
+                logger.warning(
+                    "Supplier price file not downloaded, skipping",
+                    extra={
+                        "supplier_id": self.supplier_id,
+                        "file_name": file,
+                    },
+                )
+                skipped_files.append(file)
+                continue
+
             current_code = await self._parse_file(
-                self.temp_dir / file,
+                file_path,
                 current_code,
                 clothing_by_name,
                 categories_by_code,
             )
+            await remove_file_async(file_path)
+            processed_count += 1
+
         logger.info(
             "Supplier price file processing completed",
             extra={
                 "supplier_id": self.supplier_id,
                 "file_count": len(FILENAME_MAPPING),
+                "processed_count": processed_count,
+                "skipped_count": len(skipped_files),
+                "skipped_files": skipped_files,
                 "next_code": current_code,
             },
         )
@@ -450,12 +495,24 @@ class PriceLoader:
                 "file_name": file_path.name,
             },
         )
+
+        if not await aios.path.exists(file_path):
+            raise FileAppNotFoundError(
+                path=file_path,
+                message="Price file not found",
+            )
+
         try:
             inf: DataFrame = await asyncio.to_thread(
                 lambda: pd.read_excel(
                     file_path, skiprows=PRODUCT_SKIP_HEAD_ROWS
                 )
             )
+        except FileNotFoundError as error:
+            raise FileAppNotFoundError(
+                path=file_path,
+                message="Price file not found",
+            ) from error
         except Exception as error:
             raise ExcelProcessingError(
                 error_code="EXCEL_READ_ERROR",
@@ -463,6 +520,7 @@ class PriceLoader:
                 details={
                     "file_name": file_path.name,
                     "error_type": type(error).__name__,
+                    "error": str(error),
                 },
             ) from error
 
