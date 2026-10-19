@@ -1,4 +1,5 @@
 from http import HTTPStatus
+from typing import Any
 
 from fastapi import APIRouter, Depends, Response
 
@@ -61,15 +62,29 @@ def upd_portal_dropbox(
     # state: State = Depends(get_storage),
 ) -> list[UpdFilesDropbox]:
     result = dropbox_service.upd_portal_dropbox()  # (state)
-    errors = [order["error"] for order in result if order.get("error")]
-    if not result or errors:
+    items = [_to_dropbox_dto(order) for order in result]
+    errors = [item.error for item in items if item.error]
+    if not items or errors:
         response.status_code = HTTPStatus.BAD_REQUEST
     logger.info(
         "Dropbox portal synchronization endpoint completed",
         extra={
-            "processed_count": len(result),
+            "processed_count": len(items),
             "error_count": len(errors),
             "status_code": response.status_code,
         },
     )
-    return [UpdFilesDropbox(**order) for order in result]
+    return items
+
+
+def _to_dropbox_dto(order: dict[str, Any]) -> UpdFilesDropbox:
+    """Преобразует внутренний результат сервиса в DTO ответа."""
+    old_file = order.get("old_file") or {}
+    return UpdFilesDropbox(
+        filename=order["file_name"],
+        load=order.get("uploaded"),
+        del_dropbox=old_file.get("del_dropbox"),
+        del_lockal=old_file.get("del_local"),
+        # пробрасываем и вложенную ошибку удаления старого файла
+        error=order.get("error") or old_file.get("error"),
+    )

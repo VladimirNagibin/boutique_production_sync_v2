@@ -1,5 +1,7 @@
 import asyncio
+import secrets
 import shutil
+import time
 import uuid
 
 from pathlib import Path
@@ -10,8 +12,6 @@ import numpy as np
 import pandas as pd
 import requests
 
-
-# import xlrd
 from fastapi import Depends, UploadFile
 from pandas import DataFrame
 
@@ -19,14 +19,17 @@ from common.exceptions.app_exceptions import (
     ApiError,
     DataProcessingError,
     DownloadError,
-    ErrorMessages,
+    ExcelProcessingError,
+    PriceProcessingError,
 )
+from common.exceptions.base import BaseAppException
 from common.exceptions.file import (
     FileAppNotFoundError,
     FileUploadError,
     ZipExtractionError,
 )
 from common.log_context import bind_class, log_run
+from common.log_redact import redact_url
 from core.logger import get_logger
 from core.settings import settings
 from repositories.supplier_clothing_codes_repo import (
@@ -67,7 +70,58 @@ from .config import (
 logger = get_logger(__name__)
 
 
-FOLDER = "uploads/"
+HTTP_TIMEOUT_SECONDS: int = 1800
+DOWNLOAD_MAX_RETRIES: int = 3
+RETRY_BASE_DELAY_SECONDS: float = 1.0
+RETRY_MAX_DELAY_SECONDS: float = 30.0
+RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Экспоненциальная задержка с jitter."""
+    delay = min(
+        RETRY_BASE_DELAY_SECONDS * (2.0**attempt),
+        RETRY_MAX_DELAY_SECONDS,
+    )
+    return delay * (0.5 + secrets.randbelow(1000) / 2000)
+
+
+def _get_with_retry(url: str, **kwargs: Any) -> requests.Response:
+    """GET-запрос с ретраями для временных и серверных ошибок."""
+    last_error: requests.RequestException | None = None
+    for attempt in range(DOWNLOAD_MAX_RETRIES):
+        try:
+            response = requests.get(
+                url, timeout=HTTP_TIMEOUT_SECONDS, **kwargs
+            )
+        except (requests.ConnectionError, requests.Timeout) as error:
+            last_error = error
+        else:
+            if response.status_code in RETRYABLE_STATUS_CODES:
+                response.close()
+                last_error = requests.exceptions.HTTPError(
+                    f"Retryable HTTP status {response.status_code}",
+                    response=response,
+                )
+            else:
+                return response
+
+        if attempt >= DOWNLOAD_MAX_RETRIES - 1:
+            break
+        delay = _backoff_delay(attempt)
+        logger.warning(
+            "HTTP request failed, retrying",
+            extra={
+                "url": redact_url(url),
+                "attempt": attempt + 1,
+                "error_type": type(last_error).__name__,
+                "backoff_seconds": round(delay, 2),
+            },
+        )
+        time.sleep(delay)
+
+    assert last_error is not None
+    raise last_error
 
 
 class PriceLoader:
@@ -114,19 +168,21 @@ class PriceLoader:
                 await self._fetch_and_process_directory(self.public_key)
                 await self._parse_files()
                 df = await self.price_repo.fetch_all()
-            except Exception as e:
-                logger.error(
+            except BaseAppException:
+                raise
+            except Exception as error:
+                logger.exception(
                     "Supplier price synchronization failed",
                     extra={
                         "supplier_id": self.supplier_id,
-                        "error_type": type(e).__name__,
+                        "error_type": type(error).__name__,
                     },
-                    exc_info=True,
                 )
-                error_code = "PROCESS_PRICE_ERROR"
-                raise DownloadError(
-                    error_code, f"Сбой синхронизации: {e!s}"
-                ) from e
+                raise PriceProcessingError(
+                    error_code="PROCESS_PRICE_ERROR",
+                    message="Supplier price synchronization failed",
+                    details={"error_type": type(error).__name__},
+                ) from error
             else:
                 logger.info(
                     "Supplier price synchronization completed",
@@ -158,53 +214,62 @@ class PriceLoader:
         обработку элементов.
         """
         params: dict[str, Any] = {"public_key": public_url, "limit": 1000}
-        error_code = "API_STRUCTURE_ERROR"
         try:
-            response = requests.get(self.api_url, params=params, timeout=1000)
+            response = _get_with_retry(self.api_url, params=params)
             if response.status_code != 200:
-                error_message = f"Ошибка доступа к API: {response.status_code}"
-                raise ApiError(error_message)
+                raise ApiError(
+                    error_code="API_HTTP_ERROR",
+                    message=f"API returned HTTP {response.status_code}",
+                    details={"status_code": response.status_code},
+                )
 
-            data: dict[str, Any] = response.json()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ApiError(
+                    error_code="API_STRUCTURE_ERROR",
+                    message="Invalid API response: expected an object",
+                )
+            data: dict[str, Any] = payload
 
-            # Проверяем структуру, чтобы избежать KeyError
             embedded = data.get("_embedded")
             if not isinstance(embedded, dict):
                 raise ApiError(
-                    error_code, "Некорректный ответ API (ожидается _embedded)"
+                    error_code="API_STRUCTURE_ERROR",
+                    message="Invalid API response: missing '_embedded'",
                 )
 
             items = embedded.get("items", [])
             if not isinstance(items, list):
                 raise ApiError(
-                    error_code,
-                    "Некорректный ответ API (ожидается список items)",
+                    error_code="API_STRUCTURE_ERROR",
+                    message="Invalid API response: 'items' is not a list",
                 )
 
-            # Приводим к нужному типу (для mypy)
-            # return cast("list[dict[str, Any]]", items)
-
-            # items = data.get("_embedded", {}).get("items", [])
-
-        except requests.RequestException as e:
-            logger.exception(
-                "Supplier directory request failed",
-                extra={
-                    "supplier_id": self.supplier_id,
-                    "error_type": type(e).__name__,
-                },
-            )
-            error_message = f"Ошибка запроса к API: {e!s}"
-            raise ApiError(error_message) from e
-        except KeyError as e:
+        except (ValueError, TypeError) as error:
             logger.exception(
                 "Supplier directory response structure is invalid",
                 extra={
                     "supplier_id": self.supplier_id,
-                    "error_type": type(e).__name__,
+                    "error_type": type(error).__name__,
                 },
             )
-            raise ApiError(error_code, "Некорректный ответ API") from e
+            raise ApiError(
+                error_code="API_STRUCTURE_ERROR",
+                message="Invalid API response structure",
+            ) from error
+        except requests.RequestException as error:
+            logger.exception(
+                "Supplier directory request failed",
+                extra={
+                    "supplier_id": self.supplier_id,
+                    "error_type": type(error).__name__,
+                },
+            )
+            raise ApiError(
+                error_code="API_REQUEST_ERROR",
+                message="Supplier directory request failed",
+                details={"error_type": type(error).__name__},
+            ) from error
         else:
             return cast("list[dict[str, Any]]", items)
 
@@ -215,9 +280,9 @@ class PriceLoader:
         Обрабатывает список элементов (файлов и папок), полученных из API.
         """
         for item in items:
-            item_name = item.get("name")
+            item_name = item.get("name") or f"{uuid.uuid4()!s}.xlsx"
+            item_name = str(item_name)
             item_type = item.get("type")
-            item_name = str(item_name) or f"{uuid.uuid4()!s}.xlsx"
 
             if item_type == "file":
                 file_url = item.get("file")
@@ -235,80 +300,90 @@ class PriceLoader:
         """
         try:
             await asyncio.to_thread(self._download_file_sync, url, filename)
-        except Exception as e:
+        except BaseAppException:
+            raise
+        except Exception as error:
             logger.exception(
                 "Supplier price file download failed",
                 extra={
                     "supplier_id": self.supplier_id,
                     "file_name": filename,
-                    "error_type": type(e).__name__,
+                    "error_type": type(error).__name__,
                 },
             )
+            raise
 
     def _download_file_sync(self, url: str, original_filename: str) -> None:
         """
         Синхронный метод: скачивает файл и сохраняет его под каноническим
         именем.
         """
-        # 1. Определяем каноническое имя файла по маппингу
-        # Если имени нет в маппинге, оставляем оригинальное
+        # Определяем каноническое имя файла по маппингу.
+        # Если имени нет в маппинге, оставляем оригинальное.
         target_filename = FILENAME_MAPPING.get(
             original_filename, original_filename
         )
         save_path: Path = self.temp_dir / target_filename
-        # 2. Выполняем запрос с обработкой исключений
-        try:
-            logger.info(
-                "Downloading supplier price file",
-                extra={
-                    "supplier_id": self.supplier_id,
-                    "file_name": target_filename,
-                },
-            )
 
-            # 2. Скачивание
-            response = requests.get(url, stream=True, timeout=1000)
+        logger.info(
+            "Downloading supplier price file",
+            extra={
+                "supplier_id": self.supplier_id,
+                "file_name": target_filename,
+            },
+        )
+
+        try:
+            response = _get_with_retry(url, stream=True)
             response.raise_for_status()
-        except requests.RequestException as e:
-            error_msg = f"Request failed for {target_filename}: {e}"
+        except requests.RequestException as error:
+            status_code = (
+                error.response.status_code
+                if isinstance(error, requests.exceptions.HTTPError)
+                and error.response is not None
+                else None
+            )
             logger.exception(
                 "Supplier price file request failed",
                 extra={
                     "supplier_id": self.supplier_id,
                     "file_name": target_filename,
-                    "error_type": type(e).__name__,
+                    "status_code": status_code,
+                    "error_type": type(error).__name__,
                 },
             )
-            error_code = f"DOWNLOAD_FAILED status code: {response.status_code}"
             raise DownloadError(
-                error_code, error_msg, details={"url": url}
-            ) from e
-        # 2. Сохраняем файл (используем Path.open())
+                error_code="DOWNLOAD_FAILED",
+                message=f"Request failed for {target_filename}",
+                details={"url": redact_url(url), "status_code": status_code},
+            ) from error
+
         try:
             with save_path.open("wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-        except OSError as e:
-            error_msg = f"File write error for {original_filename}"
+        except OSError as error:
             logger.error(
                 "Supplier price file write failed",
                 extra={
                     "supplier_id": self.supplier_id,
                     "file_name": target_filename,
-                    "error_type": type(e).__name__,
+                    "error_type": type(error).__name__,
                 },
                 exc_info=True,
             )
-            error_code = "FILE_WRITE_ERROR"
-            raise DownloadError(error_code, error_msg) from e
-        except Exception as e:
-            # Ловим всё остальное, но логируем и пробрасываем
+            raise DownloadError(
+                error_code="FILE_WRITE_ERROR",
+                message=f"File write error for {original_filename}",
+            ) from error
+        except Exception as error:
+            # Ловим всё остальное, но логируем и пробрасываем.
             logger.error(
                 "Unexpected supplier price download error",
                 extra={
                     "supplier_id": self.supplier_id,
                     "file_name": target_filename,
-                    "error_type": type(e).__name__,
+                    "error_type": type(error).__name__,
                 },
                 exc_info=True,
             )
@@ -375,9 +450,22 @@ class PriceLoader:
                 "file_name": file_path.name,
             },
         )
-        inf = await asyncio.to_thread(
-            pd.read_excel, file, skiprows=PRODUCT_SKIP_HEAD_ROWS
-        )
+        try:
+            inf: DataFrame = await asyncio.to_thread(
+                lambda: pd.read_excel(
+                    file_path, skiprows=PRODUCT_SKIP_HEAD_ROWS
+                )
+            )
+        except Exception as error:
+            raise ExcelProcessingError(
+                error_code="EXCEL_READ_ERROR",
+                message="Failed to read price Excel file",
+                details={
+                    "file_name": file_path.name,
+                    "error_type": type(error).__name__,
+                },
+            ) from error
+
         sizes: list[str] = []
         product_name = ""
         product_price = 0
@@ -385,7 +473,9 @@ class PriceLoader:
         for s in inf.itertuples():
             if not np.isnan(s[PRODUCT_SIGN_COLUMN]):
                 product_name = s[PRODUCT_NAME_COLUMN]
-                if file == self.temp_dir / FILE_CHANGE:
+                if file_path == self.temp_dir / FILE_CHANGE and isinstance(
+                    product_name, str
+                ):
                     product_name = product_name.replace("cont", "Conte")
                 product_price = s[PRODUCT_PRICE_COLUMN]
                 product_price = 0 if np.isnan(product_price) else product_price
@@ -483,14 +573,12 @@ class PriceLoader:
                 "Starting uploaded supplier price processing",
                 extra={
                     "supplier_id": self.supplier_id,
-                    "file_name": file.filename,
+                    "file_name": file.filename or "<unnamed>",
                 },
             )
             # 1. Загрузка ZIP файла
             upload_response = await self.file_uploader.upload_file(file)
-            self._validate_upload_response(upload_response)
-            details = upload_response.details
-            assert details is not None  # проверено в _validate_upload_response
+            details = self._validate_upload_response(upload_response)
             zip_file_path = Path(details["file_path"])
 
             # 2. Подготовка директории для распаковки
@@ -532,34 +620,29 @@ class PriceLoader:
                 self.converter.upload_file, price_filename
             )
             self._ensure_converter_success(upload_result, price_filename)
-        except (
-            # FileSizeError,
-            ZipExtractionError,
-            FileUploadError,
-            FileAppNotFoundError,
-            DataProcessingError,
-        ) as e:
-            # Ошибки бизнес-логики, логируем warning и пробрасываем
+        except BaseAppException as error:
+            # Ошибки бизнес-логики, логируем warning и пробрасываем.
             logger.warning(
                 "Uploaded supplier price processing failed",
                 extra={
                     "supplier_id": self.supplier_id,
-                    "error_type": type(e).__name__,
+                    "error_type": type(error).__name__,
                 },
             )
             raise
 
-        except Exception as e:
-            # Непредвиденные ошибки
+        except Exception as error:
+            # Непредвиденные ошибки.
             logger.exception(
                 "Unexpected uploaded supplier price processing error",
                 extra={
                     "supplier_id": self.supplier_id,
-                    "error_type": type(e).__name__,
+                    "error_type": type(error).__name__,
                 },
             )
-            error_message = "Внутренняя ошибка при обработке файла"
-            raise RuntimeError(error_message) from e
+            raise DataProcessingError(
+                message="Unexpected error during uploaded price processing",
+            ) from error
         else:
             logger.info(
                 "Uploaded supplier price processing completed",
@@ -579,10 +662,13 @@ class PriceLoader:
 
     def _validate_upload_response(
         self, upload_response: SuccessResponse
-    ) -> None:
+    ) -> dict[str, Any]:
         if not upload_response.details:
-            error_message = "File not uploaded"
-            raise FileUploadError(error_message)
+            raise FileUploadError(
+                path="<unknown>",
+                message="File not uploaded",
+            )
+        return upload_response.details
 
     @staticmethod
     def _ensure_converter_success(
@@ -624,22 +710,25 @@ class PriceLoader:
             # Если это наши кастомные исключения — просто пробрасываем их выше
             raise
 
-        except Exception as e:
+        except Exception as error:
             logger.error(
                 "Supplier price archive extraction failed",
                 extra={
                     "supplier_id": self.supplier_id,
                     "archive_name": zip_path.name,
-                    "error_type": type(e).__name__,
+                    "error_type": type(error).__name__,
                 },
                 exc_info=True,
             )
-            error_message = f"Ошибка при распаковке архива: {zip_path.name}"
-            raise ZipExtractionError(zip_path, error_message) from e
+            raise ZipExtractionError(
+                zip_path, "Failed to extract archive"
+            ) from error
 
     def _validate_file_found(self, files: list[Path]) -> None:
         if not files:
-            raise DataProcessingError(ErrorMessages.ERR_MSG_CSV_NOT_FOUND)
+            raise DataProcessingError(
+                message="No XLSX/XLS file found in archive",
+            )
 
     async def load_file_to_db(self, unpacked_file_path: str) -> None:
         df = await asyncio.to_thread(self._load_excel_data, unpacked_file_path)
@@ -680,8 +769,11 @@ class PriceLoader:
     @staticmethod
     def _raise_missing_columns(missing_columns: list[str]) -> None:
         """Бросает ошибку при отсутствии колонок в xlsx."""
-        error_message = f"Отсутствуют обязательные колонки: {missing_columns}"
-        raise ValueError(error_message)
+        raise ExcelProcessingError(
+            error_code="MISSING_COLUMNS",
+            message="Missing required columns in Excel file",
+            details={"missing_columns": missing_columns},
+        )
 
     @staticmethod
     def _prepare_category_updates(df: DataFrame) -> list[dict[str, Any]]:
@@ -708,10 +800,9 @@ class PriceLoader:
 
     async def save_price_for_load(self, file_name: str | Path) -> None:
         data_frame = await self.price_repo.fetch_ordered()
-        excel_file_path = file_name
-        brand = ""
-        subgroup = ""
-        price_all = []
+        brand: Any = ""
+        subgroup: Any = ""
+        price_all: list[list[Any]] = []
         price_all.append(["", "", ""])
         for s in data_frame.itertuples():
             brand_current = s.category
@@ -727,7 +818,7 @@ class PriceLoader:
                 price_all.append(["", subgroup, ""])
             price_all.append([code, name, price])
         df = pd.DataFrame(price_all, columns=["code", "name", "price"])
-        await asyncio.to_thread(df.to_excel, excel_file_path, index=False)
+        await asyncio.to_thread(df.to_excel, file_name, index=False)
 
     async def upd_table(self) -> None:
         """
