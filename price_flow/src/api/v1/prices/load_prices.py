@@ -191,5 +191,3 @@ async def load_codes_nulan(
     return SuccessResponse(
         data=upload_result.model_dump(), message="Price nulan loaded"
     )
-    # await price_loader.upd_table()
-    # return SuccessResponse(message="OK")
