@@ -19,11 +19,6 @@ from common.exceptions.file import (
     ZipExtractionError,
 )
 from core.logger import get_logger
-
-# from repositories.supplier_codes_repo import (
-#     SupplierCodesRepo,
-#     get_supplier_codes_repo,
-# )
 from repositories.supplier_product_codes_repo import (
     SupplierProductCodeRepository,
     get_supplier_product_codes_repo,

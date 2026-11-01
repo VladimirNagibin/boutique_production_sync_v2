@@ -1,6 +1,7 @@
 import time
 
 from collections.abc import Iterable
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -153,13 +154,16 @@ class SupplierClothingCodeRepository:
         self,
         csv_path: str | Path,
         chunksize: int = DEFAULT_CHUNKSIZE,
+        truncate: bool = True,
     ) -> dict[str, Any]:
         """
-        Очищает таблицу и загружает данные из CSV пакетами.
+        Загружает данные из CSV пакетами.
 
         Args:
             csv_path: Путь к CSV-файлу.
             chunksize: Размер пакета вставки.
+            truncate: Очистить таблицу перед загрузкой (True) или подгрузить
+                данные, пропуская дубликаты (False).
 
         Returns:
             Словарь со статистикой загрузки.
@@ -174,19 +178,25 @@ class SupplierClothingCodeRepository:
             raise FileAppNotFoundError(
                 csv_path, f"CSV file not found: {csv_path}"
             )
+        mode = "replace" if truncate else "append"
         logger.info(
-            "Starting clothing codes CSV load with truncate",
-            extra={"file": str(csv_path), "chunksize": chunksize},
+            "Starting clothing codes CSV load",
+            extra={
+                "file": str(csv_path),
+                "chunksize": chunksize,
+                "mode": mode,
+            },
         )
         start_time = time.time()
 
         def _sync_load(sync_engine: Engine) -> dict[str, Any]:
             rows_loaded = self._load_csv_to_db(
-                csv_path, sync_engine, chunksize
+                csv_path, sync_engine, chunksize, truncate
             )
             processing_time = int((time.time() - start_time) * 1000)
             return {
                 "status": "success",
+                "mode": mode,
                 "rows_loaded": rows_loaded,
                 "processing_time_ms": processing_time,
                 "file_path": str(csv_path),
@@ -197,9 +207,10 @@ class SupplierClothingCodeRepository:
         try:
             result = await run_sync_db_operation(_sync_load)
             logger.info(
-                "Clothing codes CSV loaded with truncate",
+                "Clothing codes CSV loaded",
                 extra={
                     "table": TABLE_NAME,
+                    "mode": mode,
                     "rows": result["rows_loaded"],
                     "time_ms": result["processing_time_ms"],
                     "file": str(csv_path),
@@ -209,7 +220,7 @@ class SupplierClothingCodeRepository:
             raise
         except Exception as e:
             logger.error(
-                "Failed to load clothing codes CSV with truncate",
+                "Failed to load clothing codes CSV",
                 extra={"error": str(e), "file": str(csv_path)},
                 exc_info=True,
             )
@@ -221,7 +232,11 @@ class SupplierClothingCodeRepository:
     # ----- Приватные методы -----
 
     def _load_csv_to_db(
-        self, csv_path: Path, sync_engine: Engine, chunksize: int
+        self,
+        csv_path: Path,
+        sync_engine: Engine,
+        chunksize: int,
+        truncate: bool,
     ) -> int:
         """Читает CSV чанками и вставляет в таблицу в одной транзакции."""
         encoding = self._detect_file_encoding(csv_path)
@@ -253,10 +268,12 @@ class SupplierClothingCodeRepository:
                 csv_path, f"Формат файла не соответствует CSV: {e}"
             ) from e
 
+        on_conflict = None if truncate else "ON CONFLICT DO NOTHING"
         with sync_engine.connect() as conn:
             trans = conn.begin()
             try:
-                conn.execute(text(TRUNCATE_SQL))
+                if truncate:
+                    conn.execute(text(TRUNCATE_SQL))
                 for chunk in csv_chunks:
                     if not columns_validated:
                         self._validate_columns(chunk, csv_path)
@@ -269,7 +286,9 @@ class SupplierClothingCodeRepository:
                         con=conn,
                         if_exists="append",
                         index=False,
-                        method=self._psql_fast_insert,
+                        method=partial(
+                            self._psql_fast_insert, on_conflict=on_conflict
+                        ),
                         chunksize=chunksize,
                     )
                     rows_loaded += (
@@ -394,6 +413,7 @@ class SupplierClothingCodeRepository:
         conn: Any,
         keys: list[str],
         data_iter: Iterable[tuple[Any, ...]],
+        on_conflict: str | None = None,
     ) -> int | None:
         """
         Вставляет данные через PostgreSQL execute_values.
@@ -405,6 +425,8 @@ class SupplierClothingCodeRepository:
         cursor = dbapi_conn.cursor()
         try:
             sql = f"INSERT INTO {table.name} ({', '.join(keys)}) VALUES %s"  # noqa: S608
+            if on_conflict:
+                sql += " " + on_conflict
             execute_values(cursor, sql, data_iter, page_size=DEFAULT_CHUNKSIZE)
         finally:
             cursor.close()
